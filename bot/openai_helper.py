@@ -392,7 +392,7 @@ class OpenAIHelper:
             prompt = self.config['vision_prompt'] if prompt is None else prompt
             message = {'role':'user', 'content':[{'type':'text', 'text':prompt}, {'type':'image_url', \
                         'image_url': {'url':f'data:image/jpeg;base64,{image}', 'detail':self.config['vision_detail'] } }]}
-            response = await self.client.chat.completions.create(model=self.config['model'], messages=[message], max_tokens=self.config['vision_max_tokens'])
+            response = await self.client.chat.completions.create(model='gpt-4-vision-preview', messages=[message], max_tokens=self.config['vision_max_tokens'])
             return response.choices[0].message.content, self.__count_tokens_vision(filename)
         
         except openai.RateLimitError as e:
@@ -513,7 +513,7 @@ class OpenAIHelper:
         """
         image = Image.open(filename)
         model = self.config['model']
-        if model not in GPT_4_VISION_MODELS:
+        if model not in GPT_4_VISION_MODELS and False:
             raise NotImplementedError(f"""num_tokens_from_messages() is not implemented for model {model}.""")
         
         w, h = image.size
