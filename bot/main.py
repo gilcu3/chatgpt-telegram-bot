@@ -55,6 +55,9 @@ def main():
         'whisper_prompt': os.environ.get('WHISPER_PROMPT', ''),
         'tts_model': os.environ.get('TTS_MODEL', 'tts-1'),
         'tts_voice': os.environ.get('TTS_VOICE', 'alloy'),
+        'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),
+        'vision_detail': os.environ.get('VISION_DETAIL', 'low'),
+        'vision_max_tokens': int(os.environ.get('VISION_MAX_TOKENS', '300')),
     }
 
     if openai_config['enable_functions'] and not functions_available:
@@ -76,6 +79,7 @@ def main():
         'enable_image_generation': os.environ.get('ENABLE_IMAGE_GENERATION', 'true').lower() == 'true',
         'enable_transcription': os.environ.get('ENABLE_TRANSCRIPTION', 'true').lower() == 'true',
         'enable_tts_generation': os.environ.get('ENABLE_TTS_GENERATION', 'true').lower() == 'true',
+        'enable_vision': os.environ.get('ENABLE_VISION', 'true').lower() == 'true',
         'budget_period': os.environ.get('BUDGET_PERIOD', 'monthly').lower(),
         'user_budgets': os.environ.get('USER_BUDGETS', os.environ.get('MONTHLY_USER_BUDGETS', '*')),
         'guest_budget': float(os.environ.get('GUEST_BUDGET', os.environ.get('MONTHLY_GUEST_BUDGET', '100.0'))),
@@ -84,12 +88,14 @@ def main():
         'voice_reply_transcript': os.environ.get('VOICE_REPLY_WITH_TRANSCRIPT_ONLY', 'false').lower() == 'true',
         'voice_reply_prompts': os.environ.get('VOICE_REPLY_PROMPTS', '').split(';'),
         'ignore_group_transcriptions': os.environ.get('IGNORE_GROUP_TRANSCRIPTIONS', 'true').lower() == 'true',
+        'ignore_group_vision': os.environ.get('IGNORE_GROUP_VISION', 'true').lower() == 'true',
         'group_trigger_keyword': os.environ.get('GROUP_TRIGGER_KEYWORD', ''),
         'token_price': float(os.environ.get('TOKEN_PRICE', 0.002)),
         'image_prices': [float(i) for i in os.environ.get('IMAGE_PRICES', "0.016,0.018,0.02").split(",")],
         'image_receive_mode': os.environ.get('IMAGE_RECEIVE_MODE', "photo"),
         'tts_model': os.environ.get('TTS_MODEL', 'tts-1'),
         'tts_prices': [float(i) for i in os.environ.get('TTS_PRICES', "0.015,0.030").split(",")],
+        'vision_token_price': float(os.environ.get('VISION_TOKEN_PRICE', '0.01')),
         'transcription_price': float(os.environ.get('TRANSCRIPTION_PRICE', 0.006)),
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
     }
