@@ -63,6 +63,8 @@ def are_functions_available(model: str) -> bool:
     # Stable models will be updated to support functions on June 27, 2023
     if model in ("gpt-3.5-turbo", "gpt-3.5-turbo-1106", "gpt-4", "gpt-4-32k","gpt-4-1106-preview"):
         return datetime.date.today() > datetime.date(2023, 6, 27)
+    if model == 'gpt-4-vision-preview':
+        return False
     return True
 
 
