@@ -10,7 +10,7 @@ import openai
 import requests
 import json
 import httpx
-import tempfile
+import io
 from datetime import date
 from calendar import monthrange
 from PIL import Image
@@ -364,8 +364,9 @@ class OpenAIHelper:
                 response_format='opus'
             )
 
-            temp_file = tempfile.NamedTemporaryFile()
-            response.stream_to_file(temp_file.name)
+            temp_file = io.BytesIO()
+            temp_file.write(response.read())
+            temp_file.seek(0)
             return temp_file, len(text)
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
