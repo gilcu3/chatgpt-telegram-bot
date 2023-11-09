@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import tempfile
+import io
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -458,20 +458,28 @@ class ChatGPTTelegramBot:
         if not self.config['enable_vision'] or not await self.check_allowed_and_within_budget(update, context):
             return
 
-        if is_group_chat(update) and self.config['ignore_group_vision']:
-            logging.info(f'Vision coming from group chat, ignoring...')
-            return
-
         chat_id = update.effective_chat.id
-        image = update.message.effective_attachment[-1]
         prompt = update.message.caption
-        temp_file = tempfile.NamedTemporaryFile()
+
+        if is_group_chat(update):
+            if self.config['ignore_group_vision']:
+                logging.info(f'Vision coming from group chat, ignoring...')
+                return
+            else:
+                trigger_keyword = self.config['group_trigger_keyword']
+                if (prompt is None and trigger_keyword != '') or \
+                   (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
+                    logging.info(f'Vision coming from group chat with wrong keyword, ignoring...')
+                    return
+        
+        image = update.message.effective_attachment[-1]
+        
 
         async def _execute():
             bot_language = self.config['bot_language']
             try:
                 media_file = await context.bot.get_file(image.file_id)
-                await media_file.download_to_drive(temp_file.name)
+                temp_file = io.BytesIO(await media_file.download_as_bytearray())
             except Exception as e:
                 logging.exception(e)
                 await update.effective_message.reply_text(
@@ -487,12 +495,12 @@ class ChatGPTTelegramBot:
             
             # convert jpg from telegram to png as understood by openai
 
-            temp_file_png = tempfile.NamedTemporaryFile()
+            temp_file_png = io.BytesIO()
 
             try:
-                original_image = Image.open(temp_file.name)
+                original_image = Image.open(temp_file)
                 
-                original_image.save(temp_file_png.name, format='PNG')
+                original_image.save(temp_file_png, format='PNG')
                 logging.info(f'New vision request received from user {update.message.from_user.name} '
                              f'(id: {update.message.from_user.id})')
 
@@ -511,7 +519,7 @@ class ChatGPTTelegramBot:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
             try:
-                interpretation, tokens = await self.openai.interpret_image(temp_file_png.name, prompt=prompt)
+                interpretation, tokens = await self.openai.interpret_image(chat_id, temp_file_png, prompt=prompt)
 
                 vision_token_price = self.config['vision_token_price']
                 self.usage[user_id].add_vision_tokens(tokens, vision_token_price)
@@ -536,9 +544,6 @@ class ChatGPTTelegramBot:
                     text=f"{localized_text('vision_fail', bot_language)}: {str(e)}",
                     parse_mode=constants.ParseMode.MARKDOWN
                 )
-            finally:
-                temp_file.close()
-                temp_file_png.close()
 
         await wrap_with_indicator(update, context, _execute, constants.ChatAction.TYPING)
 
