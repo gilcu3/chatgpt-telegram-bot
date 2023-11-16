@@ -17,7 +17,7 @@ from PIL import Image
 
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 
-from utils import is_direct_result, encode_image
+from utils import is_direct_result, encode_image, compute_image_diff
 from plugin_manager import PluginManager
 
 # Models can be found here: https://platform.openai.com/docs/models/overview
@@ -348,6 +348,39 @@ class OpenAIHelper:
             return response.data[0].url, self.config['image_size']
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+    
+    async def edit_image(self, chat_id, orig_image, modified_image, prompt):
+        """
+        Edits a given PNG image (and the mask) using the Dalle 2 model.
+        """
+        try:
+
+            mask_image = compute_image_diff(orig_image, modified_image)
+
+            args = {
+                'model': 'dall-e-2', # for now only this is supported
+                'n': 1,
+                'size':self.config['image_size'],
+                'image':orig_image,
+                'prompt':prompt,
+                'mask':mask_image
+            }
+
+            response = await self.client.images.edit(**args)
+            
+
+            
+            image_urls = [_.url for _ in response.data]
+            
+            return image_urls, self.config['image_size']
+        
+        except openai.RateLimitError as e:
+            raise e
+        except openai.BadRequestError as e:
+            raise Exception(f"⚠️ _{localized_text('openai_invalid', self.config['bot_language'])}._ ⚠️\n{str(e)}") from e
+        except Exception as e:
+            logging.exception(e)
+            raise Exception(f"⚠️ _{localized_text('error', self.config['bot_language'])}._ ⚠️\n{str(e)}") from e
 
     async def generate_speech(self, text: str) -> tuple[any, int]:
         """
@@ -370,6 +403,29 @@ class OpenAIHelper:
             return temp_file, len(text)
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
+    async def generate_speech(self, text: str) -> tuple[any, int]:
+        """
+        Generates an audio from the given text using TTS model.
+        :param prompt: The text to send to the model
+        :return: The audio in bytes and the text size
+        """
+        bot_language = self.config['bot_language']
+        try:
+            response = await self.client.audio.speech.create(
+                model=self.config['tts_model'],
+                voice=self.config['tts_voice'],
+                input=text,
+                response_format='opus'
+            )
+
+            temp_file = io.BytesIO()
+            temp_file.write(response.read())
+            temp_file.seek(0)
+            return temp_file, len(text)
+        except Exception as e:
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
 
     async def transcribe(self, filename):
         """
