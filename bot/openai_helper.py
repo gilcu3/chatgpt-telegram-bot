@@ -139,7 +139,7 @@ class OpenAIHelper:
         """
         plugins_used = ()
         response = await self.__common_get_chat_response(chat_id, query)
-        if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
+        if self.config['enable_functions'] and (not self.conversations_vision[chat_id] or self.config['model'] in GPT_4O_MODELS):
             response, plugins_used = await self.__handle_function_call(chat_id, response)
             if is_direct_result(response):
                 return response, '0'
@@ -182,7 +182,7 @@ class OpenAIHelper:
         """
         plugins_used = ()
         response = await self.__common_get_chat_response(chat_id, query, stream=True)
-        if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
+        if self.config['enable_functions'] and (not self.conversations_vision[chat_id] or self.config['model'] in GPT_4O_MODELS):
             response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
             if is_direct_result(response):
                 yield response, '0'
@@ -251,7 +251,7 @@ class OpenAIHelper:
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
             common_args = {
-                'model': self.config['model'] if not self.conversations_vision[chat_id] else self.config['vision_model'],
+                'model': self.config['model'] if (not self.conversations_vision[chat_id] or self.config['model'] in GPT_4O_MODELS) else self.config['vision_model'],
                 'messages': self.conversations[chat_id],
                 'temperature': self.config['temperature'],
                 'n': self.config['n_choices'],
@@ -261,7 +261,7 @@ class OpenAIHelper:
                 'stream': stream
             }
 
-            if self.config['enable_functions'] and not self.conversations_vision[chat_id]:
+            if self.config['enable_functions'] and (not self.conversations_vision[chat_id] or self.config['model'] in GPT_4O_MODELS ):
                 functions = self.plugin_manager.get_functions_specs()
                 if len(functions) > 0:
                     common_args['functions'] = self.plugin_manager.get_functions_specs()
@@ -595,13 +595,12 @@ class OpenAIHelper:
 
         response = await self.__common_get_chat_response_vision(chat_id, content, stream=True)
 
-        
 
-        # if self.config['enable_functions']:
-        #     response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
-        #     if is_direct_result(response):
-        #         yield response, '0'
-        #         return
+        if self.config['enable_functions'] and self.config['model'] in GPT_4O_MODELS:
+            response, plugins_used = await self.__handle_function_call(chat_id, response, stream=True)
+            if is_direct_result(response):
+                yield response, '0'
+                return
 
         answer = ''
         async for chunk in response:
@@ -615,14 +614,17 @@ class OpenAIHelper:
         self.__add_to_history(chat_id, role="assistant", content=answer)
         tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
-        #show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
-        #plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+        if self.config['enable_functions'] and self.config['model'] in GPT_4O_MODELS:
+            show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
+            plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+        else:
+            show_plugins_used = False
         if self.config['show_usage']:
             answer += f"\n\n---\n💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}"
-        #     if show_plugins_used:
-        #         answer += f"\n🔌 {', '.join(plugin_names)}"
-        # elif show_plugins_used:
-        #     answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+            if show_plugins_used:
+                answer += f"\n🔌 {', '.join(plugin_names)}"
+        elif show_plugins_used:
+            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
 
         yield answer, tokens_used
 
