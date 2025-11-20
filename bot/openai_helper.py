@@ -27,7 +27,8 @@ GPT_4_VISION_MODELS = ("gpt-4o",)
 GPT_4_128K_MODELS = ("gpt-4-1106-preview", "gpt-4-0125-preview", "gpt-4-turbo-preview", "gpt-4-turbo", "gpt-4-turbo-2024-04-09")
 GPT_4O_MODELS = ("gpt-4o", "gpt-4o-mini", "chatgpt-4o-latest")
 O_MODELS = ("o1", "o1-mini", "o1-preview")
-GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS
+GPT_5_MODELS = ("gpt-5.1", "gpt-5.1-chat-latest", "gpt-5.1-codex", "gpt-5.1-codex-mini")
+GPT_ALL_MODELS = GPT_3_MODELS + GPT_3_16K_MODELS + GPT_4_MODELS + GPT_4_32K_MODELS + GPT_4_VISION_MODELS + GPT_4_128K_MODELS + GPT_4O_MODELS + O_MODELS + GPT_5_MODELS
 
 def default_max_tokens(model: str) -> int:
     """
@@ -54,6 +55,8 @@ def default_max_tokens(model: str) -> int:
         return 4096
     elif model in O_MODELS:
         return 4096
+    elif model in GPT_5_MODELS:
+        return 8192  # GPT-5.1 supports up to 128K output tokens, using conservative default
 
 
 def are_functions_available(model: str) -> bool:
@@ -252,6 +255,10 @@ class OpenAIHelper:
                 'frequency_penalty': self.config['frequency_penalty'],
                 'stream': stream
             }
+
+            # Add reasoning_effort parameter for GPT-5.1 models
+            if self.config['model'] in GPT_5_MODELS and 'reasoning_effort' in self.config:
+                common_args['reasoning_effort'] = self.config['reasoning_effort']
 
             if self.config['enable_functions'] and (not self.conversations_vision[chat_id] or self.config['model'] in GPT_4O_MODELS ):
                 functions = self.plugin_manager.get_functions_specs()
@@ -698,6 +705,9 @@ class OpenAIHelper:
                 return 32_768
             else:
                 return 65_536
+        elif self.config['model'] in GPT_5_MODELS:
+            # GPT-5.1 has 272K input context window
+            return 272_000
         raise NotImplementedError(
             f"Max tokens for model {self.config['model']} is not implemented yet."
         )

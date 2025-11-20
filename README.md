@@ -42,6 +42,11 @@ A [Telegram bot](https://core.telegram.org/bots/api) that integrates with OpenAI
 - [x] (NEW!) Vision support [announced on November 6, 2023](https://platform.openai.com/docs/guides/vision) - by [@gilcu3](https://github.com/gilcu3)
 - [x] (NEW!) GPT-4o model support [announced on May 12, 2024](https://openai.com/index/hello-gpt-4o/) - by [@err09r](https://github.com/err09r)
 - [x] (NEW!) o1 and o1-mini model preliminary support
+- [x] (NEW!) GPT-5.1 model support [announced on November 12, 2025](https://openai.com/index/gpt-5-1-for-developers/)
+  - Support for gpt-5.1, gpt-5.1-chat-latest, gpt-5.1-codex, and gpt-5.1-codex-mini
+  - Adaptive reasoning with configurable reasoning_effort parameter
+  - 272K input context window for extended conversations
+  - Enhanced coding capabilities with specialized Codex variants
 
 ## Additional features - help needed!
 If you'd like to help, check out the [issues](https://github.com/n3d1117/chatgpt-telegram-bot/issues) section and contribute!  
@@ -95,7 +100,7 @@ Check out the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/di
 | `PROXY`                             | Proxy to be used for OpenAI and Telegram bot (e.g. `http://localhost:8080`)                                                                                                                                                                                                             | -                                  |
 | `OPENAI_PROXY`                      | Proxy to be used only for OpenAI (e.g. `http://localhost:8080`)                                                                                                                                                                                                                         | -                                  |
 | `TELEGRAM_PROXY`                    | Proxy to be used only for Telegram bot (e.g. `http://localhost:8080`)                                                                                                                                                                                                                   | -                                  |
-| `OPENAI_MODEL`                      | The OpenAI model to use for generating responses. You can find all available models [here](https://platform.openai.com/docs/models/)                                                                                                                                                    | `gpt-4o`                           |
+| `OPENAI_MODEL`                      | The OpenAI model to use for generating responses. Supports GPT-3.5, GPT-4, GPT-4o, o1, and GPT-5.1 models (including gpt-5.1-codex variants). You can find all available models [here](https://platform.openai.com/docs/models/)                                                        | `gpt-4o`                           |
 | `OPENAI_BASE_URL`                   | Endpoint URL for unofficial OpenAI-compatible APIs (e.g., LocalAI or text-generation-webui)                                                                                                                                                                                             | Default OpenAI API URL             |
 | `ASSISTANT_PROMPT`                  | A system message that sets the tone and controls the behavior of the assistant                                                                                                                                                                                                          | `You are a helpful assistant.`     |
 | `SHOW_USAGE`                        | Whether to show OpenAI token usage information after each response                                                                                                                                                                                                                      | `false`                            |
@@ -126,6 +131,7 @@ Check out the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/di
 | `WHISPER_PROMPT`                    | To improve the accuracy of Whisper's transcription service, especially for specific names or terms, you can set up a custom message.  [Speech to text - Prompting](https://platform.openai.com/docs/guides/speech-to-text/prompting)                                                    | `-`                                |
 | `TTS_VOICE`                         | The Text to Speech voice to use. Allowed values: `alloy`, `echo`, `fable`, `onyx`, `nova`, or `shimmer`                                                                                                                                                                                 | `alloy`                            |
 | `TTS_MODEL`                         | The Text to Speech model to use. Allowed values: `tts-1` or `tts-1-hd`                                                                                                                                                                                                                  | `tts-1`                            |
+| `REASONING_EFFORT`                  | Controls reasoning behavior for GPT-5.1 models. `auto` enables adaptive reasoning that adjusts based on task complexity, `none` disables reasoning for faster responses. Only applies when using GPT-5.1 models.                                                                         | `auto`                             |
 
 Check out the [official API reference](https://platform.openai.com/docs/api-reference/chat) for more details.
 
