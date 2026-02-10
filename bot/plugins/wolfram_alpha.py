@@ -23,7 +23,7 @@ class WolframAlphaPlugin(Plugin):
         return [{
             "name": "answer_with_wolfram_alpha",
             "description": "Get an answer to a question using Wolfram Alpha. Input should the the query in English.",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "The search query, in english (translate if necessary)"}

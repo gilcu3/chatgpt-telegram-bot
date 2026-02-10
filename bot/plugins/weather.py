@@ -26,7 +26,7 @@ class WeatherPlugin(Plugin):
             {
                 "name": "get_current_weather",
                 "description": "Get the current weather for a location using Open Meteo APIs.",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "latitude": latitude_param,
@@ -40,7 +40,7 @@ class WeatherPlugin(Plugin):
                 "name": "get_forecast_weather",
                 "description": "Get daily weather forecast for a location using Open Meteo APIs."
                                f"Today is {datetime.today().strftime('%A, %B %d, %Y')}",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "latitude": latitude_param,

@@ -22,7 +22,7 @@ class WorldTimeApiPlugin(Plugin):
         return [{
             "name": "worldtimeapi",
             "description": "Get the current time from a given timezone",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "timezone": {

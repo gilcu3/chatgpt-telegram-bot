@@ -21,7 +21,7 @@ class DDGWebSearchPlugin(Plugin):
         return [{
             "name": "web_search",
             "description": "Execute a web search for the given query and return a list of results",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {

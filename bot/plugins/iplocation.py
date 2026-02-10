@@ -16,7 +16,7 @@ class IpLocationPlugin(Plugin):
         return [{
             "name": "iplocation",
             "description": "Get information for an IP address using the IP.FM API.",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "ip": {"type": "string", "description": "IP Address"}
