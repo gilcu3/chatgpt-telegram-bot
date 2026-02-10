@@ -52,14 +52,17 @@ class PluginManager:
         """
         return [spec for specs in map(lambda plugin: plugin.get_spec(), self.plugins) for spec in specs]
 
-    async def call_function(self, function_name, helper, arguments):
+    async def call_function(self, function_name, helper, arguments, user_id=None):
         """
         Call a function based on the name and parameters provided
         """
         plugin = self.__get_plugin_by_function_name(function_name)
         if not plugin:
             return json.dumps({'error': f'Function {function_name} not found'})
-        return json.dumps(await plugin.execute(function_name, helper, **json.loads(arguments)), default=str)
+        parsed_args = json.loads(arguments)
+        if user_id is not None:
+            parsed_args['_user_id'] = user_id
+        return json.dumps(await plugin.execute(function_name, helper, **parsed_args), default=str)
 
     def get_plugin_source_name(self, function_name) -> str:
         """

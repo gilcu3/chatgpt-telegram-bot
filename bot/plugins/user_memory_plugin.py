@@ -22,20 +22,17 @@ class UserMemoryPlugin(Plugin):
                 "name": "remember_user_name",
                 "description": "Remember a user's preferred name. Call this when a user introduces "
                                "themselves or asks to be called a specific name. This persists across "
-                               "conversations so you can greet them by name in the future.",
+                               "conversations so you can greet them by name in the future. "
+                               "The user_id is provided automatically — you only need to supply the name.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "user_id": {
-                            "type": "string",
-                            "description": "The user ID from the message prefix (provided in the system context)"
-                        },
                         "name": {
                             "type": "string",
                             "description": "The name the user wants to be called"
                         }
                     },
-                    "required": ["user_id", "name"]
+                    "required": ["name"]
                 }
             },
             {
@@ -43,26 +40,26 @@ class UserMemoryPlugin(Plugin):
                 "description": "Remember a notable fact about a user for future reference. Use this "
                                "when a user shares something personally significant — their job, "
                                "hobbies, preferences, or important life details. Don't store trivial "
-                               "or conversational things. This persists across conversations.",
+                               "or conversational things. This persists across conversations. "
+                               "The user_id is provided automatically — you only need to supply the fact.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "user_id": {
-                            "type": "string",
-                            "description": "The user ID from the message prefix (provided in the system context)"
-                        },
                         "fact": {
                             "type": "string",
                             "description": "A concise fact about the user to remember"
                         }
                     },
-                    "required": ["user_id", "fact"]
+                    "required": ["fact"]
                 }
             }
         ]
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
-        user_id = int(kwargs["user_id"])
+        user_id = kwargs.get('_user_id')
+        if user_id is None:
+            return {"error": "No user context available"}
+        user_id = int(user_id)
 
         if function_name == "remember_user_name":
             name = kwargs["name"]
