@@ -288,11 +288,10 @@ class ChatGPTTelegramBot:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
             # Prefix with sender identity for user distinction and memory
-            if prompt:
-                prompt = self._prefix_with_user_context(update, prompt)
+            vision_prompt = self._prefix_with_user_context(update, prompt) if prompt else prompt
 
             if self.config['stream']:
-                stream_response = self.claude.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png, prompt=prompt)
+                stream_response = self.claude.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png, prompt=vision_prompt)
                 i = 0
                 prev = ''
                 sent_message = None
@@ -372,7 +371,7 @@ class ChatGPTTelegramBot:
 
             else:
                 try:
-                    interpretation, total_tokens = await self.claude.interpret_image(chat_id, temp_file_png, prompt=prompt)
+                    interpretation, total_tokens = await self.claude.interpret_image(chat_id, temp_file_png, prompt=vision_prompt)
 
                     try:
                         await update.effective_message.reply_text(
