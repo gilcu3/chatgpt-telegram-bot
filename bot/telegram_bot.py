@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import io
+from collections import deque
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -57,6 +58,7 @@ class ChatGPTTelegramBot:
         self.usage = {}
         self.last_message = {}
         self.inline_queries_cache = {}
+        self.group_chat_messages: dict[int, deque] = {}  # {chat_id: rolling buffer of recent messages}
 
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
@@ -451,6 +453,11 @@ class ChatGPTTelegramBot:
         # users and use the memory tools with the correct user_id.
         prompt = self._prefix_with_user_context(update, prompt)
 
+        # Build group context from the rolling buffer (only used on fresh conversations)
+        group_context = None
+        if is_group_chat(update):
+            group_context = self._get_group_context(chat_id)
+
         try:
             total_tokens = 0
 
@@ -460,7 +467,7 @@ class ChatGPTTelegramBot:
                     message_thread_id=get_thread_id(update)
                 )
 
-                stream_response = self.claude.get_chat_response_stream(chat_id=chat_id, query=prompt, user_id=user_id)
+                stream_response = self.claude.get_chat_response_stream(chat_id=chat_id, query=prompt, user_id=user_id, group_context=group_context)
                 i = 0
                 prev = ''
                 sent_message = None
@@ -540,7 +547,7 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens
-                    response, total_tokens = await self.claude.get_chat_response(chat_id=chat_id, query=prompt, user_id=user_id)
+                    response, total_tokens = await self.claude.get_chat_response(chat_id=chat_id, query=prompt, user_id=user_id, group_context=group_context)
 
                     if is_direct_result(response):
                         return await handle_direct_result(self.config, update, response)
@@ -805,6 +812,51 @@ class ChatGPTTelegramBot:
             result_id = str(uuid4())
             await self.send_inline_query_result(update, result_id, message_content=self.budget_limit_message)
 
+    async def _capture_group_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Silently capture group chat messages into a rolling context buffer.
+        Runs in a separate handler group so it processes every group text message
+        independently of the main prompt handler.
+        """
+        if update.edited_message or not update.message or update.message.via_bot:
+            return
+        if not is_group_chat(update):
+            return
+
+        max_messages = self.config.get('group_context_messages', 5)
+        if max_messages <= 0:
+            return
+
+        text = message_text(update.message)
+        if not text:
+            return
+
+        chat_id = update.effective_chat.id
+        sender = update.message.from_user.first_name or "Unknown"
+
+        if chat_id not in self.group_chat_messages:
+            self.group_chat_messages[chat_id] = deque(maxlen=max_messages)
+
+        self.group_chat_messages[chat_id].append(f"{sender}: {text}")
+
+    def _get_group_context(self, chat_id: int) -> str | None:
+        """
+        Build a formatted context string from the rolling group chat buffer.
+        Returns None if no buffered messages are available.
+        """
+        if chat_id not in self.group_chat_messages:
+            return None
+
+        messages = list(self.group_chat_messages[chat_id])
+        if not messages:
+            return None
+
+        context_lines = "\n".join(messages)
+        return (
+            f"[Recent group chat messages for context:\n"
+            f"{context_lines}]"
+        )
+
     def _prefix_with_user_context(self, update: Update, prompt: str) -> str:
         """
         Prefixes a prompt with sender identity and memory context.
@@ -860,6 +912,13 @@ class ChatGPTTelegramBot:
             filters.PHOTO | filters.Document.IMAGE,
             self.vision))
         application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self.prompt))
+        application.add_handler(
+            MessageHandler(
+                filters.TEXT & (~filters.COMMAND) & (filters.ChatType.GROUP | filters.ChatType.SUPERGROUP),
+                self._capture_group_message
+            ),
+            group=-1  # Runs before main handlers to capture every group message
+        )
         application.add_handler(InlineQueryHandler(self.inline_query, chat_types=[
             constants.ChatType.GROUP, constants.ChatType.SUPERGROUP, constants.ChatType.PRIVATE
         ]))

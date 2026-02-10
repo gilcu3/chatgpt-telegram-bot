@@ -1,3 +1,4 @@
+import logging
 import os
 from itertools import islice
 from typing import Dict
@@ -47,21 +48,27 @@ class DDGWebSearchPlugin(Plugin):
         }]
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
-        with DDGS() as ddgs:
-            ddgs_gen = ddgs.text(
-                kwargs['query'],
-                region=kwargs.get('region', 'wt-wt'),
-                safesearch=self.safesearch
-            )
-            results = list(islice(ddgs_gen, 3))
+        try:
+            with DDGS() as ddgs:
+                ddgs_gen = ddgs.text(
+                    kwargs['query'],
+                    region=kwargs.get('region', 'wt-wt'),
+                    safesearch=self.safesearch
+                )
+                results = list(islice(ddgs_gen, 3))
 
-            if results is None or len(results) == 0:
-                return {"Result": "No good DuckDuckGo Search Result was found"}
+                if results is None or len(results) == 0:
+                    return {"Result": "No good DuckDuckGo Search Result was found"}
 
-            def to_metadata(result: Dict) -> Dict[str, str]:
-                return {
-                    "snippet": result["body"],
-                    "title": result["title"],
-                    "link": result["href"],
-                }
-            return {"result": [to_metadata(result) for result in results]}
+                def to_metadata(result: Dict) -> Dict[str, str]:
+                    return {
+                        "snippet": result["body"],
+                        "title": result["title"],
+                        "link": result["href"],
+                    }
+                return {"result": [to_metadata(result) for result in results]}
+        except Exception as e:
+            logging.warning(f'Web search failed: {e}')
+            return {"result": "Web search is temporarily unavailable due to rate limiting. "
+                              "Please answer based on your existing knowledge and let the user "
+                              "know that live search results were not available."}
