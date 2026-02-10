@@ -80,6 +80,19 @@ class ClaudeHelper:
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
 
+    def _build_system_prompt(self) -> str:
+        """Builds the full system prompt, including memory tool instructions."""
+        base = self.config['assistant_prompt']
+        memory_supplement = (
+            "\n\nIn group chats, user messages are prefixed with "
+            "'[user_id:ID] Name: message'. Use the user_id when calling "
+            "remember_user_name or remember_user_fact. Memory context about "
+            "a user may appear in brackets before their message — use it to "
+            "personalise your responses. In direct messages, memory context "
+            "may appear on a line before the user's message."
+        )
+        return base + memory_supplement
+
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
         Gets the number of messages and tokens used in the conversation.
@@ -214,7 +227,7 @@ class ClaudeHelper:
         common_args = {
             'model': self.config['model'],
             'messages': self.conversations[chat_id],
-            'system': self.config['assistant_prompt'],
+            'system': self._build_system_prompt(),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['max_tokens'],
         }
@@ -325,7 +338,7 @@ class ClaudeHelper:
         common_args = {
             'model': self.config['model'],
             'messages': self.conversations[chat_id],
-            'system': self.config['assistant_prompt'],
+            'system': self._build_system_prompt(),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['max_tokens'],
         }
@@ -378,7 +391,7 @@ class ClaudeHelper:
         return {
             'model': self.config['model'],
             'messages': self.conversations[chat_id][:-1] + [message],
-            'system': self.config['assistant_prompt'],
+            'system': self._build_system_prompt(),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['vision_max_tokens'],
         }

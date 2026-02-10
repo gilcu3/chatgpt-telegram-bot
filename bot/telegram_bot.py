@@ -21,6 +21,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     cleanup_intermediate_files
 from claude_helper import ClaudeHelper, localized_text
 from usage_tracker import UsageTracker
+from user_memory import UserMemory
 
 
 class ChatGPTTelegramBot:
@@ -28,20 +29,24 @@ class ChatGPTTelegramBot:
     Class representing a Claude Telegram Bot.
     """
 
-    def __init__(self, config: dict, claude: ClaudeHelper):
+    def __init__(self, config: dict, claude: ClaudeHelper, user_memory: UserMemory):
         """
         Initializes the bot with the given configuration and Claude helper object.
         :param config: A dictionary containing the bot configuration
         :param claude: ClaudeHelper object
+        :param user_memory: UserMemory object for persistent per-user memory
         """
         self.config = config
         self.claude = claude
+        self.user_memory = user_memory
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
-            BotCommand(command='resend', description=localized_text('resend_description', bot_language))
+            BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
+            BotCommand(command='mymemory', description=localized_text('mymemory_description', bot_language)),
+            BotCommand(command='forgetme', description=localized_text('forgetme_description', bot_language)),
         ]
 
         self.group_commands = [BotCommand(
@@ -188,6 +193,39 @@ class ChatGPTTelegramBot:
             text=localized_text('reset_done', self.config['bot_language'])
         )
 
+    async def mymemory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Shows the user what the bot remembers about them.
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        user_id = update.message.from_user.id
+        memory_text = self.user_memory.get_all_formatted(user_id)
+        bot_language = self.config['bot_language']
+        header = localized_text('mymemory_header', bot_language)
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=f"{header}\n\n{memory_text}"
+        )
+
+    async def forgetme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Clears all stored memory for the user.
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        user_id = update.message.from_user.id
+        self.user_memory.clear_user(user_id)
+        bot_language = self.config['bot_language']
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=localized_text('forgetme_done', bot_language)
+        )
+
     async def vision(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Interpret image using Claude vision.
@@ -249,9 +287,9 @@ class ChatGPTTelegramBot:
             if user_id not in self.usage:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
-            # In group chats, prefix the prompt with the sender's name
-            if is_group_chat(update) and prompt:
-                prompt = f"{update.message.from_user.first_name}: {prompt}"
+            # Prefix with sender identity for user distinction and memory
+            if prompt:
+                prompt = self._prefix_with_user_context(update, prompt)
 
             if self.config['stream']:
                 stream_response = self.claude.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png, prompt=prompt)
@@ -410,10 +448,9 @@ class ChatGPTTelegramBot:
                     logging.warning('Message does not start with trigger keyword, ignoring...')
                     return
 
-        # In group chats, prefix the prompt with the sender's name so Claude
-        # can distinguish between different users in the conversation.
-        if is_group_chat(update):
-            prompt = f"{update.message.from_user.first_name}: {prompt}"
+        # Prefix the prompt with sender identity so Claude can distinguish
+        # users and use the memory tools with the correct user_id.
+        prompt = self._prefix_with_user_context(update, prompt)
 
         try:
             total_tokens = 0
@@ -769,6 +806,28 @@ class ChatGPTTelegramBot:
             result_id = str(uuid4())
             await self.send_inline_query_result(update, result_id, message_content=self.budget_limit_message)
 
+    def _prefix_with_user_context(self, update: Update, prompt: str) -> str:
+        """
+        Prefixes a prompt with sender identity and memory context.
+        In group chats: includes user_id, display name, and any stored memory.
+        In DMs: includes memory context only (no name prefix needed).
+        """
+        user_id = update.message.from_user.id
+        first_name = update.message.from_user.first_name
+        display_name = self.user_memory.get_display_name(user_id) or first_name
+        memory_context = self.user_memory.get_context_string(user_id)
+
+        if is_group_chat(update):
+            prefix = f"[user_id:{user_id}] {display_name}: "
+            if memory_context:
+                prefix = f"{memory_context} {prefix}"
+            return f"{prefix}{prompt}"
+        else:
+            # DM — no name prefix, but include memory if available
+            if memory_context:
+                return f"{memory_context}\n{prompt}"
+            return prompt
+
     async def post_init(self, application: Application) -> None:
         """
         Post initialization hook for the bot.
@@ -793,6 +852,8 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('start', self.help))
         application.add_handler(CommandHandler('stats', self.stats))
         application.add_handler(CommandHandler('resend', self.resend))
+        application.add_handler(CommandHandler('mymemory', self.mymemory))
+        application.add_handler(CommandHandler('forgetme', self.forgetme))
         application.add_handler(CommandHandler(
             'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
         )

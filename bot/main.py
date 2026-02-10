@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from plugin_manager import PluginManager
 from claude_helper import ClaudeHelper, default_max_tokens, are_functions_available
 from telegram_bot import ChatGPTTelegramBot
+from user_memory import UserMemory
 
 
 def main():
@@ -72,9 +73,10 @@ def main():
     }
 
     # Setup and run Claude and Telegram bot
-    plugin_manager = PluginManager(config=plugin_config)
+    user_memory = UserMemory()
+    plugin_manager = PluginManager(config=plugin_config, user_memory=user_memory)
     claude_helper = ClaudeHelper(config=claude_config, plugin_manager=plugin_manager)
-    telegram_bot = ChatGPTTelegramBot(config=telegram_config, claude=claude_helper)
+    telegram_bot = ChatGPTTelegramBot(config=telegram_config, claude=claude_helper, user_memory=user_memory)
     telegram_bot.run()
 
 
