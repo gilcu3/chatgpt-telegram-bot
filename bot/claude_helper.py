@@ -1,0 +1,550 @@
+from __future__ import annotations
+import datetime
+import logging
+import os
+import json
+import httpx
+
+import anthropic
+
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
+
+from utils import is_direct_result
+from plugin_manager import PluginManager
+
+# Claude models and their context windows
+CLAUDE_MODELS = {
+    "claude-opus-4-6": 200000,
+    "claude-opus-4-5-20251124": 200000,
+    "claude-sonnet-4-5-20250929": 200000,
+    "claude-haiku-4-5-20251001": 200000,
+}
+
+DEFAULT_MODEL = "claude-sonnet-4-5-20250929"
+
+
+def default_max_tokens(model: str) -> int:
+    """
+    Gets the default number of max tokens for the given model.
+    :param model: The model name
+    :return: The default number of max tokens
+    """
+    return 4096
+
+
+def are_functions_available(model: str) -> bool:
+    """
+    Whether the given model supports tool use (all Claude models do).
+    """
+    return True
+
+
+# Load translations
+parent_dir_path = os.path.join(os.path.dirname(__file__), os.pardir)
+translations_file_path = os.path.join(parent_dir_path, 'translations.json')
+with open(translations_file_path, 'r', encoding='utf-8') as f:
+    translations = json.load(f)
+
+
+def localized_text(key, bot_language):
+    """
+    Return translated text for a key in specified bot_language.
+    Keys and translations can be found in the translations.json.
+    """
+    try:
+        return translations[bot_language][key]
+    except KeyError:
+        logging.warning(f"No translation available for bot_language code '{bot_language}' and key '{key}'")
+        if key in translations['en']:
+            return translations['en'][key]
+        else:
+            logging.warning(f"No english definition found for key '{key}' in translations.json")
+            return key
+
+
+class ClaudeHelper:
+    """
+    Claude API helper class.
+    """
+
+    def __init__(self, config: dict, plugin_manager: PluginManager):
+        """
+        Initializes the Claude helper class with the given configuration.
+        :param config: A dictionary containing the Claude configuration
+        :param plugin_manager: The plugin manager
+        """
+        http_client = httpx.AsyncClient(proxy=config['proxy']) if config.get('proxy') else None
+        self.client = anthropic.AsyncAnthropic(api_key=config['api_key'], http_client=http_client)
+        self.config = config
+        self.plugin_manager = plugin_manager
+        self.conversations: dict[int: list] = {}  # {chat_id: history}
+        self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
+
+    def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
+        """
+        Gets the number of messages and tokens used in the conversation.
+        :param chat_id: The chat ID
+        :return: A tuple containing the number of messages and tokens used
+        """
+        if chat_id not in self.conversations:
+            self.reset_chat_history(chat_id)
+        return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
+
+    async def get_chat_response(self, chat_id: int, query: str) -> tuple[str, str]:
+        """
+        Gets a full response from the Claude model.
+        :param chat_id: The chat ID
+        :param query: The query to send to the model
+        :return: The answer from the model and the number of tokens used
+        """
+        plugins_used = ()
+        response = await self.__common_get_chat_response(chat_id, query)
+        if self.config['enable_functions']:
+            response, plugins_used = await self.__handle_tool_call(chat_id, response)
+            if is_direct_result(response):
+                return response, '0'
+
+        answer = ''
+        for block in response.content:
+            if block.type == 'text':
+                answer += block.text
+
+        answer = answer.strip()
+        self.__add_to_history(chat_id, role="assistant", content=answer)
+
+        bot_language = self.config['bot_language']
+        show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
+        plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+        total_tokens = response.usage.input_tokens + response.usage.output_tokens
+        if self.config['show_usage']:
+            answer += "\n\n---\n" \
+                      f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}" \
+                      f" ({str(response.usage.input_tokens)} {localized_text('prompt', bot_language)}," \
+                      f" {str(response.usage.output_tokens)} {localized_text('completion', bot_language)})"
+            if show_plugins_used:
+                answer += f"\n🔌 {', '.join(plugin_names)}"
+        elif show_plugins_used:
+            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+
+        return answer, total_tokens
+
+    async def get_chat_response_stream(self, chat_id: int, query: str):
+        """
+        Stream response from the Claude model.
+        :param chat_id: The chat ID
+        :param query: The query to send to the model
+        :return: The answer from the model and the number of tokens used, or 'not_finished'
+        """
+        plugins_used = ()
+        response = await self.__common_get_chat_response(chat_id, query, stream=False)
+        if self.config['enable_functions']:
+            response, plugins_used = await self.__handle_tool_call(chat_id, response)
+            if is_direct_result(response):
+                yield response, '0'
+                return
+
+        # Check if we got a non-streaming response from tool calling
+        # If so, extract text and yield it
+        if hasattr(response, 'content'):
+            answer = ''
+            for block in response.content:
+                if block.type == 'text':
+                    answer += block.text
+            answer = answer.strip()
+            self.__add_to_history(chat_id, role="assistant", content=answer)
+            tokens_used = str(response.usage.input_tokens + response.usage.output_tokens)
+
+            show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
+            plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+            if self.config['show_usage']:
+                answer += f"\n\n---\n💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}"
+                if show_plugins_used:
+                    answer += f"\n🔌 {', '.join(plugin_names)}"
+            elif show_plugins_used:
+                answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+
+            yield answer, tokens_used
+            return
+
+        # This path is for pure streaming without tool calls
+        answer = ''
+        async for chunk in response:
+            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
+                answer += chunk.delta.text
+                yield answer, 'not_finished'
+
+        answer = answer.strip()
+        self.__add_to_history(chat_id, role="assistant", content=answer)
+        tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
+
+        show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
+        plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+        if self.config['show_usage']:
+            answer += f"\n\n---\n💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}"
+            if show_plugins_used:
+                answer += f"\n🔌 {', '.join(plugin_names)}"
+        elif show_plugins_used:
+            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+
+        yield answer, tokens_used
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(anthropic.RateLimitError),
+        wait=wait_fixed(20),
+        stop=stop_after_attempt(3)
+    )
+    async def __common_get_chat_response(self, chat_id: int, query: str, stream=False):
+        """
+        Request a response from the Claude model.
+        :param chat_id: The chat ID
+        :param query: The query to send to the model
+        :param stream: Whether to stream the response
+        :return: The response from the model
+        """
+        bot_language = self.config['bot_language']
+        try:
+            if chat_id not in self.conversations or self.__max_age_reached(chat_id):
+                self.reset_chat_history(chat_id)
+
+            self.last_updated[chat_id] = datetime.datetime.now()
+
+            self.__add_to_history(chat_id, role="user", content=query)
+
+            # Summarize the chat history if it's too long to avoid excessive token usage
+            token_count = self.__count_tokens(self.conversations[chat_id])
+            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+            exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
+
+            if exceeded_max_tokens or exceeded_max_history_size:
+                logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+                try:
+                    summary = await self.__summarise(self.conversations[chat_id][:-1])
+                    logging.debug(f'Summary: {summary}')
+                    self.reset_chat_history(chat_id)
+                    self.__add_to_history(chat_id, role="assistant", content=summary)
+                    self.__add_to_history(chat_id, role="user", content=query)
+                except Exception as e:
+                    logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
+                    self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
+
+            common_args = {
+                'model': self.config['model'],
+                'messages': self.conversations[chat_id],
+                'system': self.config['assistant_prompt'],
+                'temperature': self.config['temperature'],
+                'max_tokens': self.config['max_tokens'],
+            }
+
+            if self.config['enable_functions']:
+                tools = self.plugin_manager.get_functions_specs()
+                if len(tools) > 0:
+                    common_args['tools'] = tools
+
+            if stream and not self.config['enable_functions']:
+                # Only use native streaming when tools are not enabled
+                # (tool calls require non-streaming to handle the back-and-forth)
+                async with self.client.messages.stream(**common_args) as stream_response:
+                    async for event in stream_response:
+                        yield event
+                return
+
+            return await self.client.messages.create(**common_args)
+
+        except anthropic.RateLimitError as e:
+            raise e
+
+        except anthropic.BadRequestError as e:
+            raise Exception(f"⚠️ _{localized_text('claude_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+
+        except Exception as e:
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
+    async def __handle_tool_call(self, chat_id, response, times=0, plugins_used=()):
+        """
+        Handle tool use blocks in the Claude response.
+        """
+        # Check if the response contains any tool_use blocks
+        tool_use_blocks = [block for block in response.content if block.type == 'tool_use']
+
+        if not tool_use_blocks:
+            return response, plugins_used
+
+        # Process each tool call
+        tool_results = []
+        for tool_block in tool_use_blocks:
+            function_name = tool_block.name
+            arguments = json.dumps(tool_block.input)
+            tool_use_id = tool_block.id
+
+            logging.info(f'Calling function {function_name} with arguments {arguments}')
+            function_response = await self.plugin_manager.call_function(function_name, self, arguments)
+
+            if function_name not in plugins_used:
+                plugins_used += (function_name,)
+
+            if is_direct_result(function_response):
+                # Add a summary to history and return direct result
+                self.__add_to_history(chat_id, role="assistant", content=[
+                    {"type": "tool_use", "id": tool_use_id, "name": function_name, "input": tool_block.input}
+                ])
+                self.__add_to_history(chat_id, role="user", content=[
+                    {"type": "tool_result", "tool_use_id": tool_use_id,
+                     "content": json.dumps({'result': 'Done, the content has been sent to the user.'})}
+                ])
+                return function_response, plugins_used
+
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": function_response
+            })
+
+        # Add the assistant's response (with tool_use) to history
+        self.__add_to_history(chat_id, role="assistant", content=[
+            {"type": "tool_use", "id": b.id, "name": b.name, "input": b.input}
+            for b in tool_use_blocks
+        ])
+        # Add tool results as user message
+        self.__add_to_history(chat_id, role="user", content=tool_results)
+
+        # Call Claude again with the tool results
+        tools = self.plugin_manager.get_functions_specs()
+        common_args = {
+            'model': self.config['model'],
+            'messages': self.conversations[chat_id],
+            'system': self.config['assistant_prompt'],
+            'temperature': self.config['temperature'],
+            'max_tokens': self.config['max_tokens'],
+        }
+        if times < self.config['functions_max_consecutive_calls'] and len(tools) > 0:
+            common_args['tools'] = tools
+
+        response = await self.client.messages.create(**common_args)
+        return await self.__handle_tool_call(chat_id, response, times + 1, plugins_used)
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(anthropic.RateLimitError),
+        wait=wait_fixed(20),
+        stop=stop_after_attempt(3)
+    )
+    async def __common_get_chat_response_vision(self, chat_id: int, content: list, stream=False):
+        """
+        Request a vision response from the Claude model.
+        :param chat_id: The chat ID
+        :param content: The content list with text and image blocks
+        :param stream: Whether to stream the response
+        :return: The response from the model
+        """
+        bot_language = self.config['bot_language']
+        try:
+            if chat_id not in self.conversations or self.__max_age_reached(chat_id):
+                self.reset_chat_history(chat_id)
+
+            self.last_updated[chat_id] = datetime.datetime.now()
+
+            if self.config['enable_vision_follow_up_questions']:
+                self.__add_to_history(chat_id, role="user", content=content)
+            else:
+                for message in content:
+                    if message['type'] == 'text':
+                        query = message['text']
+                        break
+                self.__add_to_history(chat_id, role="user", content=query)
+
+            # Summarize the chat history if it's too long
+            token_count = self.__count_tokens(self.conversations[chat_id])
+            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+            exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
+
+            if exceeded_max_tokens or exceeded_max_history_size:
+                logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+                try:
+                    last = self.conversations[chat_id][-1]
+                    summary = await self.__summarise(self.conversations[chat_id][:-1])
+                    logging.debug(f'Summary: {summary}')
+                    self.reset_chat_history(chat_id)
+                    self.__add_to_history(chat_id, role="assistant", content=summary)
+                    self.conversations[chat_id] += [last]
+                except Exception as e:
+                    logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
+                    self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
+
+            # Build the message with vision content
+            message = {'role': 'user', 'content': content}
+
+            common_args = {
+                'model': self.config['model'],
+                'messages': self.conversations[chat_id][:-1] + [message],
+                'system': self.config['assistant_prompt'],
+                'temperature': self.config['temperature'],
+                'max_tokens': self.config['vision_max_tokens'],
+            }
+
+            if stream:
+                async with self.client.messages.stream(**common_args) as stream_response:
+                    async for event in stream_response:
+                        yield event
+                return
+
+            return await self.client.messages.create(**common_args)
+
+        except anthropic.RateLimitError as e:
+            raise e
+
+        except anthropic.BadRequestError as e:
+            raise Exception(f"⚠️ _{localized_text('claude_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+
+        except Exception as e:
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
+    async def interpret_image(self, chat_id, fileobj, prompt=None):
+        """
+        Interprets a given image file using the Claude vision model.
+        """
+        image_data, media_type = self.__encode_image_for_claude(fileobj)
+        prompt = self.config['vision_prompt'] if prompt is None else prompt
+
+        content = [
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': media_type, 'data': image_data}},
+            {'type': 'text', 'text': prompt}
+        ]
+
+        response = await self.__common_get_chat_response_vision(chat_id, content)
+
+        answer = ''
+        for block in response.content:
+            if block.type == 'text':
+                answer += block.text
+
+        answer = answer.strip()
+        self.__add_to_history(chat_id, role="assistant", content=answer)
+
+        bot_language = self.config['bot_language']
+        total_tokens = response.usage.input_tokens + response.usage.output_tokens
+        if self.config['show_usage']:
+            answer += "\n\n---\n" \
+                      f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}" \
+                      f" ({str(response.usage.input_tokens)} {localized_text('prompt', bot_language)}," \
+                      f" {str(response.usage.output_tokens)} {localized_text('completion', bot_language)})"
+
+        return answer, total_tokens
+
+    async def interpret_image_stream(self, chat_id, fileobj, prompt=None):
+        """
+        Interprets a given image file using Claude vision with streaming.
+        """
+        image_data, media_type = self.__encode_image_for_claude(fileobj)
+        prompt = self.config['vision_prompt'] if prompt is None else prompt
+
+        content = [
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': media_type, 'data': image_data}},
+            {'type': 'text', 'text': prompt}
+        ]
+
+        response = self.__common_get_chat_response_vision(chat_id, content, stream=True)
+
+        answer = ''
+        async for chunk in response:
+            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
+                answer += chunk.delta.text
+                yield answer, 'not_finished'
+
+        answer = answer.strip()
+        self.__add_to_history(chat_id, role="assistant", content=answer)
+        tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
+
+        if self.config['show_usage']:
+            answer += f"\n\n---\n💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}"
+
+        yield answer, tokens_used
+
+    def reset_chat_history(self, chat_id, content=''):
+        """
+        Resets the conversation history.
+        """
+        self.conversations[chat_id] = []
+
+    def __max_age_reached(self, chat_id) -> bool:
+        """
+        Checks if the maximum conversation age has been reached.
+        """
+        if chat_id not in self.last_updated:
+            return False
+        last_updated = self.last_updated[chat_id]
+        now = datetime.datetime.now()
+        max_age_minutes = self.config['max_conversation_age_minutes']
+        return last_updated < now - datetime.timedelta(minutes=max_age_minutes)
+
+    def __add_to_history(self, chat_id, role, content):
+        """
+        Adds a message to the conversation history.
+        """
+        self.conversations[chat_id].append({"role": role, "content": content})
+
+    async def __summarise(self, conversation) -> str:
+        """
+        Summarises the conversation history.
+        """
+        messages = [
+            {"role": "user", "content": f"Summarize this conversation in 700 characters or less:\n{str(conversation)}"}
+        ]
+        response = await self.client.messages.create(
+            model=self.config['model'],
+            messages=messages,
+            system="You are a helpful assistant that summarizes conversations concisely.",
+            max_tokens=1024,
+            temperature=0.4
+        )
+        return response.content[0].text
+
+    def __max_model_tokens(self):
+        model = self.config['model']
+        if model in CLAUDE_MODELS:
+            return CLAUDE_MODELS[model]
+        # Default to 200K for unknown Claude models
+        return 200000
+
+    def __count_tokens(self, messages) -> int:
+        """
+        Estimates the number of tokens for the given messages.
+        This is a rough estimate since Claude doesn't have a local tokenizer like tiktoken.
+        Uses ~4 characters per token as a rough approximation.
+        """
+        num_tokens = 0
+        for message in messages:
+            content = message.get('content', '')
+            if isinstance(content, str):
+                num_tokens += len(content) // 4
+            elif isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get('type') == 'text':
+                            num_tokens += len(item.get('text', '')) // 4
+                        elif item.get('type') == 'image':
+                            # Images cost roughly 1600 tokens for a typical image
+                            num_tokens += 1600
+            num_tokens += 4  # overhead per message
+        return num_tokens
+
+    def __encode_image_for_claude(self, fileobj) -> tuple[str, str]:
+        """
+        Encodes an image file object for the Claude API.
+        Returns (base64_data, media_type)
+        """
+        import base64
+        image_bytes = fileobj.getvalue()
+        image_data = base64.standard_b64encode(image_bytes).decode('utf-8')
+        # Detect format from the image bytes
+        if image_bytes[:8] == b'\x89PNG\r\n\x1a\n':
+            media_type = 'image/png'
+        elif image_bytes[:2] == b'\xff\xd8':
+            media_type = 'image/jpeg'
+        elif image_bytes[:4] == b'GIF8':
+            media_type = 'image/gif'
+        elif image_bytes[:4] == b'RIFF' and image_bytes[8:12] == b'WEBP':
+            media_type = 'image/webp'
+        else:
+            media_type = 'image/png'  # default
+        return image_data, media_type

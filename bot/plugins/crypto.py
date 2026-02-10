@@ -17,7 +17,7 @@ class CryptoPlugin(Plugin):
         return [{
             "name": "get_crypto_rate",
             "description": "Get the current rate of various crypto currencies",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "asset": {"type": "string", "description": "Asset of the crypto"}

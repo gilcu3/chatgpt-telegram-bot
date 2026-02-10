@@ -18,7 +18,7 @@ class GTTSTextToSpeech(Plugin):
         return [{
             "name": "google_translate_text_to_speech",
             "description": "Translate text to speech using Google Translate's Text to Speech API",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "The text to translate to speech"},

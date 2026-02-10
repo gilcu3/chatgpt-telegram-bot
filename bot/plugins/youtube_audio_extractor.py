@@ -19,7 +19,7 @@ class YouTubeAudioExtractorPlugin(Plugin):
         return [{
             "name": "extract_youtube_audio",
             "description": "Extract audio from a YouTube video",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "youtube_link": {"type": "string", "description": "YouTube video link to extract audio from"}

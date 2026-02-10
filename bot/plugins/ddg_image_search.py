@@ -22,7 +22,7 @@ class DDGImageSearchPlugin(Plugin):
         return [{
             "name": "search_images",
             "description": "Search image or GIFs for a given query",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "The query to search for"},

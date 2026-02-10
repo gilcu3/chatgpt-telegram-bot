@@ -4,7 +4,7 @@ from typing import Dict
 
 class Plugin(ABC):
     """
-    A plugin interface which can be used to create plugins for the ChatGPT API.
+    A plugin interface which can be used to create plugins for the Claude API.
     """
 
     @abstractmethod
@@ -17,8 +17,8 @@ class Plugin(ABC):
     @abstractmethod
     def get_spec(self) -> [Dict]:
         """
-        Function specs in the form of JSON schema as specified in the OpenAI documentation:
-        https://platform.openai.com/docs/api-reference/chat/create#chat/create-functions
+        Tool specs in the form of JSON schema as specified in the Anthropic documentation:
+        https://docs.anthropic.com/en/docs/build-with-claude/tool-use
         """
         pass
 

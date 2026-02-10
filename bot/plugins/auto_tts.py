@@ -17,7 +17,7 @@ class AutoTextToSpeech(Plugin):
         return [{
             "name": "translate_text_to_speech",
             "description": "Translate text to speech using OpenAI API",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "The text to translate to speech"},

@@ -14,7 +14,7 @@ class DicePlugin(Plugin):
         return [{
             "name": "send_dice",
             "description": "Send a dice in the chat, with a random number between 1 and 6",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "emoji": {

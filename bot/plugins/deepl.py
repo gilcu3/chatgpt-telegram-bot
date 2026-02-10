@@ -23,7 +23,7 @@ class DeeplTranslatePlugin(Plugin):
         return [{
             "name": "translate",
             "description": "Translate a given text from a language to another",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "The text to translate"},

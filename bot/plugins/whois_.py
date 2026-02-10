@@ -15,7 +15,7 @@ class WhoisPlugin(Plugin):
         return [{
             "name": "get_whois",
             "description": "Get whois registration and expiry information for a domain",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "domain": {"type": "string", "description": "Domain name"}

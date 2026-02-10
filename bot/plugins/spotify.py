@@ -52,7 +52,7 @@ class SpotifyPlugin(Plugin):
             {
                 "name": "spotify_get_currently_playing_song",
                 "description": "Get the user's currently playing song",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {}
                 }
@@ -60,7 +60,7 @@ class SpotifyPlugin(Plugin):
             {
                 "name": "spotify_get_users_top_artists",
                 "description": "Get the user's top listened artists",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "time_range": time_range_param,
@@ -71,7 +71,7 @@ class SpotifyPlugin(Plugin):
             {
                 "name": "spotify_get_users_top_tracks",
                 "description": "Get the user's top listened tracks",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "time_range": time_range_param,
@@ -82,7 +82,7 @@ class SpotifyPlugin(Plugin):
             {
                 "name": "spotify_search_by_query",
                 "description": "Search spotify content by query",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "query": {
@@ -97,7 +97,7 @@ class SpotifyPlugin(Plugin):
             {
                 "name": "spotify_lookup_by_id",
                 "description": "Lookup spotify content by id",
-                "parameters": {
+                "input_schema": {
                     "type": "object",
                     "properties": {
                         "id": {

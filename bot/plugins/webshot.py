@@ -13,7 +13,7 @@ class WebshotPlugin(Plugin):
         return [{
             "name": "screenshot_website",
             "description": "Show screenshot/image of a website from a given url or domain name.",
-            "parameters": {
+            "input_schema": {
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "Website url or domain name. Correctly formatted url is required. Example: https://www.google.com"}
