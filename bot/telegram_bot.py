@@ -249,6 +249,10 @@ class ChatGPTTelegramBot:
             if user_id not in self.usage:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
+            # In group chats, prefix the prompt with the sender's name
+            if is_group_chat(update) and prompt:
+                prompt = f"{update.message.from_user.first_name}: {prompt}"
+
             if self.config['stream']:
                 stream_response = self.claude.interpret_image_stream(chat_id=chat_id, fileobj=temp_file_png, prompt=prompt)
                 i = 0
@@ -405,6 +409,11 @@ class ChatGPTTelegramBot:
                 else:
                     logging.warning('Message does not start with trigger keyword, ignoring...')
                     return
+
+        # In group chats, prefix the prompt with the sender's name so Claude
+        # can distinguish between different users in the conversation.
+        if is_group_chat(update):
+            prompt = f"{update.message.from_user.first_name}: {prompt}"
 
         try:
             total_tokens = 0
