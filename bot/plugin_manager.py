@@ -14,6 +14,7 @@ from plugins.worldtimeapi import WorldTimeApiPlugin
 from plugins.whois_ import WhoisPlugin
 from plugins.webshot import WebshotPlugin
 from plugins.iplocation import IpLocationPlugin
+from plugins.user_memory_plugin import UserMemoryPlugin
 
 
 class PluginManager:
@@ -21,7 +22,7 @@ class PluginManager:
     A class to manage the plugins and call the correct functions
     """
 
-    def __init__(self, config):
+    def __init__(self, config, user_memory=None):
         enabled_plugins = config.get('plugins', [])
         plugin_mapping = {
             'wolfram': WolframAlphaPlugin,
@@ -40,6 +41,10 @@ class PluginManager:
             'iplocation': IpLocationPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
+
+        # User memory plugin is always active when memory is provided
+        if user_memory is not None:
+            self.plugins.append(UserMemoryPlugin(user_memory))
 
     def get_functions_specs(self):
         """
