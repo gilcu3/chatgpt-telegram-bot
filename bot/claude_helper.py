@@ -84,12 +84,11 @@ class ClaudeHelper:
         """Builds the full system prompt, including memory tool instructions."""
         base = self.config['assistant_prompt']
         memory_supplement = (
-            "\n\nIn group chats, user messages are prefixed with "
-            "'[user_id:ID] Name: message'. Use the user_id when calling "
-            "remember_user_name or remember_user_fact. Memory context about "
-            "a user may appear in brackets before their message — use it to "
-            "personalise your responses. In direct messages, memory context "
-            "may appear on a line before the user's message."
+            "\n\nIn group chats, user messages are prefixed with their name "
+            "(e.g. 'Dave: message'). Memory context about a user may appear "
+            "in brackets before their message — use it to personalise your "
+            "responses. When you call remember_user_name or remember_user_fact, "
+            "the user_id is provided automatically — just supply the name or fact."
         )
         return base + memory_supplement
 
@@ -103,17 +102,18 @@ class ClaudeHelper:
             self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
-    async def get_chat_response(self, chat_id: int, query: str) -> tuple[str, str]:
+    async def get_chat_response(self, chat_id: int, query: str, user_id: int = None) -> tuple[str, str]:
         """
         Gets a full response from the Claude model.
         :param chat_id: The chat ID
         :param query: The query to send to the model
+        :param user_id: The Telegram user ID of the sender (for memory tools)
         :return: The answer from the model and the number of tokens used
         """
         plugins_used = ()
         response = await self.__common_get_chat_response(chat_id, query)
         if self.config['enable_functions']:
-            response, plugins_used = await self.__handle_tool_call(chat_id, response)
+            response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
             if is_direct_result(response):
                 return response, '0'
 
@@ -141,11 +141,12 @@ class ClaudeHelper:
 
         return answer, total_tokens
 
-    async def get_chat_response_stream(self, chat_id: int, query: str):
+    async def get_chat_response_stream(self, chat_id: int, query: str, user_id: int = None):
         """
         Stream response from the Claude model.
         :param chat_id: The chat ID
         :param query: The query to send to the model
+        :param user_id: The Telegram user ID of the sender (for memory tools)
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
         plugins_used = ()
@@ -153,7 +154,7 @@ class ClaudeHelper:
         if self.config['enable_functions']:
             # Tool calls require non-streaming: get full response, handle tools, yield result
             response = await self.__common_get_chat_response(chat_id, query)
-            response, plugins_used = await self.__handle_tool_call(chat_id, response)
+            response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
             if is_direct_result(response):
                 yield response, '0'
                 return
@@ -285,7 +286,7 @@ class ClaudeHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
-    async def __handle_tool_call(self, chat_id, response, times=0, plugins_used=()):
+    async def __handle_tool_call(self, chat_id, response, times=0, plugins_used=(), user_id=None):
         """
         Handle tool use blocks in the Claude response.
         """
@@ -303,7 +304,7 @@ class ClaudeHelper:
             tool_use_id = tool_block.id
 
             logging.info(f'Calling function {function_name} with arguments {arguments}')
-            function_response = await self.plugin_manager.call_function(function_name, self, arguments)
+            function_response = await self.plugin_manager.call_function(function_name, self, arguments, user_id=user_id)
 
             if function_name not in plugins_used:
                 plugins_used += (function_name,)
@@ -346,7 +347,7 @@ class ClaudeHelper:
             common_args['tools'] = tools
 
         response = await self.client.messages.create(**common_args)
-        return await self.__handle_tool_call(chat_id, response, times + 1, plugins_used)
+        return await self.__handle_tool_call(chat_id, response, times + 1, plugins_used, user_id=user_id)
 
     async def __prepare_vision_chat(self, chat_id: int, content: list):
         """

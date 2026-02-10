@@ -461,7 +461,7 @@ class ChatGPTTelegramBot:
                     message_thread_id=get_thread_id(update)
                 )
 
-                stream_response = self.claude.get_chat_response_stream(chat_id=chat_id, query=prompt)
+                stream_response = self.claude.get_chat_response_stream(chat_id=chat_id, query=prompt, user_id=user_id)
                 i = 0
                 prev = ''
                 sent_message = None
@@ -541,7 +541,7 @@ class ChatGPTTelegramBot:
             else:
                 async def _reply():
                     nonlocal total_tokens
-                    response, total_tokens = await self.claude.get_chat_response(chat_id=chat_id, query=prompt)
+                    response, total_tokens = await self.claude.get_chat_response(chat_id=chat_id, query=prompt, user_id=user_id)
 
                     if is_direct_result(response):
                         return await handle_direct_result(self.config, update, response)
@@ -660,7 +660,7 @@ class ChatGPTTelegramBot:
 
                 unavailable_message = localized_text("function_unavailable_in_inline_mode", bot_language)
                 if self.config['stream']:
-                    stream_response = self.claude.get_chat_response_stream(chat_id=user_id, query=query)
+                    stream_response = self.claude.get_chat_response_stream(chat_id=user_id, query=query, user_id=user_id)
                     i = 0
                     prev = ''
                     backoff = 0
@@ -728,7 +728,7 @@ class ChatGPTTelegramBot:
                                                             parse_mode=constants.ParseMode.MARKDOWN)
 
                         logging.info(f'Generating response for inline query by {name}')
-                        response, total_tokens = await self.claude.get_chat_response(chat_id=user_id, query=query)
+                        response, total_tokens = await self.claude.get_chat_response(chat_id=user_id, query=query, user_id=user_id)
 
                         if is_direct_result(response):
                             cleanup_intermediate_files(response)
@@ -818,7 +818,7 @@ class ChatGPTTelegramBot:
         memory_context = self.user_memory.get_context_string(user_id)
 
         if is_group_chat(update):
-            prefix = f"[user_id:{user_id}] {display_name}: "
+            prefix = f"{display_name}: "
             if memory_context:
                 prefix = f"{memory_context} {prefix}"
             return f"{prefix}{prompt}"
