@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 from itertools import islice
@@ -50,25 +51,30 @@ class DDGImageSearchPlugin(Plugin):
         }]
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
-        with DDGS() as ddgs:
-            image_type = kwargs.get('type', 'photo')
-            ddgs_images_gen = ddgs.images(
-                kwargs['query'],
-                region=kwargs.get('region', 'wt-wt'),
-                safesearch=self.safesearch,
-                type_image=image_type,
-            )
-            results = list(islice(ddgs_images_gen, 10))
-            if not results or len(results) == 0:
-                return {"result": "No results found"}
+        try:
+            with DDGS() as ddgs:
+                image_type = kwargs.get('type', 'photo')
+                ddgs_images_gen = ddgs.images(
+                    kwargs['query'],
+                    region=kwargs.get('region', 'wt-wt'),
+                    safesearch=self.safesearch,
+                    type_image=image_type,
+                )
+                results = list(islice(ddgs_images_gen, 10))
+                if not results or len(results) == 0:
+                    return {"result": "No results found"}
 
-            # Shuffle the results to avoid always returning the same image
-            random.shuffle(results)
+                # Shuffle the results to avoid always returning the same image
+                random.shuffle(results)
 
-            return {
-                'direct_result': {
-                    'kind': image_type,
-                    'format': 'url',
-                    'value': results[0]['image']
+                return {
+                    'direct_result': {
+                        'kind': image_type,
+                        'format': 'url',
+                        'value': results[0]['image']
+                    }
                 }
-            }
+        except Exception as e:
+            logging.warning(f'Image search failed: {e}')
+            return {"result": "Image search is temporarily unavailable due to rate limiting. "
+                              "Let the user know and suggest they try again shortly."}
