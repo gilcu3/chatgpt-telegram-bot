@@ -102,16 +102,17 @@ class ClaudeHelper:
             self.reset_chat_history(chat_id)
         return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
 
-    async def get_chat_response(self, chat_id: int, query: str, user_id: int = None) -> tuple[str, str]:
+    async def get_chat_response(self, chat_id: int, query: str, user_id: int = None, group_context: str = None) -> tuple[str, str]:
         """
         Gets a full response from the Claude model.
         :param chat_id: The chat ID
         :param query: The query to send to the model
         :param user_id: The Telegram user ID of the sender (for memory tools)
+        :param group_context: Optional recent group chat messages for context on fresh conversations
         :return: The answer from the model and the number of tokens used
         """
         plugins_used = ()
-        response = await self.__common_get_chat_response(chat_id, query)
+        response = await self.__common_get_chat_response(chat_id, query, group_context=group_context)
         if self.config['enable_functions']:
             response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
             if is_direct_result(response):
@@ -141,19 +142,20 @@ class ClaudeHelper:
 
         return answer, total_tokens
 
-    async def get_chat_response_stream(self, chat_id: int, query: str, user_id: int = None):
+    async def get_chat_response_stream(self, chat_id: int, query: str, user_id: int = None, group_context: str = None):
         """
         Stream response from the Claude model.
         :param chat_id: The chat ID
         :param query: The query to send to the model
         :param user_id: The Telegram user ID of the sender (for memory tools)
+        :param group_context: Optional recent group chat messages for context on fresh conversations
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
         plugins_used = ()
 
         if self.config['enable_functions']:
             # Tool calls require non-streaming: get full response, handle tools, yield result
-            response = await self.__common_get_chat_response(chat_id, query)
+            response = await self.__common_get_chat_response(chat_id, query, group_context=group_context)
             response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
             if is_direct_result(response):
                 yield response, '0'
@@ -181,7 +183,7 @@ class ClaudeHelper:
 
         # Pure streaming path (no tool calls)
         answer = ''
-        async for chunk in self.__common_get_chat_response_stream(chat_id, query):
+        async for chunk in self.__common_get_chat_response_stream(chat_id, query, group_context=group_context):
             if hasattr(chunk, 'type') and chunk.type == 'content_block_delta':
                 if hasattr(chunk.delta, 'text'):
                     answer += chunk.delta.text
@@ -196,15 +198,21 @@ class ClaudeHelper:
 
         yield answer, tokens_used
 
-    async def __prepare_chat(self, chat_id: int, query: str):
+    async def __prepare_chat(self, chat_id: int, query: str, group_context: str = None):
         """
         Prepare conversation history for a chat request (shared logic).
         Returns the common_args dict for the API call.
         """
-        if chat_id not in self.conversations or self.__max_age_reached(chat_id):
+        is_new_conversation = chat_id not in self.conversations or self.__max_age_reached(chat_id)
+        if is_new_conversation:
             self.reset_chat_history(chat_id)
 
         self.last_updated[chat_id] = datetime.datetime.now()
+
+        # On fresh conversations, prepend rolling group chat context so Claude
+        # has awareness of what was being discussed before it was called upon.
+        if is_new_conversation and group_context:
+            query = f"{group_context}\n\n{query}"
 
         self.__add_to_history(chat_id, role="user", content=query)
 
@@ -246,13 +254,13 @@ class ClaudeHelper:
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response(self, chat_id: int, query: str):
+    async def __common_get_chat_response(self, chat_id: int, query: str, group_context: str = None):
         """
         Request a non-streaming response from the Claude model.
         """
         bot_language = self.config['bot_language']
         try:
-            common_args = await self.__prepare_chat(chat_id, query)
+            common_args = await self.__prepare_chat(chat_id, query, group_context=group_context)
             return await self.client.messages.create(**common_args)
 
         except anthropic.RateLimitError as e:
@@ -264,13 +272,13 @@ class ClaudeHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
-    async def __common_get_chat_response_stream(self, chat_id: int, query: str):
+    async def __common_get_chat_response_stream(self, chat_id: int, query: str, group_context: str = None):
         """
         Request a streaming response from the Claude model (no tool use).
         """
         bot_language = self.config['bot_language']
         try:
-            common_args = await self.__prepare_chat(chat_id, query)
+            common_args = await self.__prepare_chat(chat_id, query, group_context=group_context)
             # Remove tools for streaming — tool calls require non-streaming
             common_args.pop('tools', None)
             async with self.client.messages.stream(**common_args) as stream_response:

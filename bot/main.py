@@ -63,6 +63,7 @@ def main():
         'proxy': os.environ.get('PROXY', None) or os.environ.get('TELEGRAM_PROXY', None),
         'ignore_group_vision': os.environ.get('IGNORE_GROUP_VISION', 'true').lower() == 'true',
         'group_trigger_keyword': os.environ.get('GROUP_TRIGGER_KEYWORD', ''),
+        'group_context_messages': int(os.environ.get('GROUP_CONTEXT_MESSAGES', 5)),
         'token_price': float(os.environ.get('TOKEN_PRICE', 0.003)),
         'vision_token_price': float(os.environ.get('VISION_TOKEN_PRICE', '0.003')),
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
