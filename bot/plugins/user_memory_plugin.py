@@ -52,6 +52,23 @@ class UserMemoryPlugin(Plugin):
                     },
                     "required": ["fact"]
                 }
+            },
+            {
+                "name": "forget_user_fact",
+                "description": "Remove a previously stored fact about a user. Use this to correct "
+                               "outdated, wrong, or contradictory information. Also use it when a "
+                               "user asks you to forget something. Matches by substring so you don't "
+                               "need to quote the fact exactly. The user_id is provided automatically.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "fact": {
+                            "type": "string",
+                            "description": "The fact (or a distinctive part of it) to remove"
+                        }
+                    },
+                    "required": ["fact"]
+                }
             }
         ]
 
@@ -70,5 +87,12 @@ class UserMemoryPlugin(Plugin):
             fact = kwargs["fact"]
             self.user_memory.add_note(user_id, fact)
             return {"result": f"Remembered: {fact}"}
+
+        elif function_name == "forget_user_fact":
+            fact = kwargs["fact"]
+            removed = self.user_memory.remove_note(user_id, fact)
+            if removed:
+                return {"result": f"Removed: {removed}"}
+            return {"result": f"No matching fact found for: {fact}"}
 
         return {"error": f"Unknown function: {function_name}"}

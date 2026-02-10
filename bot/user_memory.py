@@ -74,6 +74,24 @@ class UserMemory:
         """Returns the list of notes for a user."""
         return self.get_user(user_id).get("notes", [])
 
+    def remove_note(self, user_id: int, fact: str) -> str | None:
+        """
+        Removes a note matching the given fact (case-insensitive substring match).
+        Returns the removed note, or None if no match was found.
+        """
+        uid = str(user_id)
+        if uid not in self.memories:
+            return None
+
+        notes = self.memories[uid]["notes"]
+        fact_lower = fact.lower()
+        for i, note in enumerate(notes):
+            if fact_lower in note.lower() or note.lower() in fact_lower:
+                removed = notes.pop(i)
+                self._save()
+                return removed
+        return None
+
     def get_context_string(self, user_id: int) -> str | None:
         """
         Returns a formatted context string for injection into prompts,
