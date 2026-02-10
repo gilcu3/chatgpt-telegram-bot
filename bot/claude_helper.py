@@ -136,16 +136,15 @@ class ClaudeHelper:
         :return: The answer from the model and the number of tokens used, or 'not_finished'
         """
         plugins_used = ()
-        response = await self.__common_get_chat_response(chat_id, query, stream=False)
+
         if self.config['enable_functions']:
+            # Tool calls require non-streaming: get full response, handle tools, yield result
+            response = await self.__common_get_chat_response(chat_id, query)
             response, plugins_used = await self.__handle_tool_call(chat_id, response)
             if is_direct_result(response):
                 yield response, '0'
                 return
 
-        # Check if we got a non-streaming response from tool calling
-        # If so, extract text and yield it
-        if hasattr(response, 'content'):
             answer = ''
             for block in response.content:
                 if block.type == 'text':
@@ -166,27 +165,66 @@ class ClaudeHelper:
             yield answer, tokens_used
             return
 
-        # This path is for pure streaming without tool calls
+        # Pure streaming path (no tool calls)
         answer = ''
-        async for chunk in response:
-            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
-                answer += chunk.delta.text
-                yield answer, 'not_finished'
+        async for chunk in self.__common_get_chat_response_stream(chat_id, query):
+            if hasattr(chunk, 'type') and chunk.type == 'content_block_delta':
+                if hasattr(chunk.delta, 'text'):
+                    answer += chunk.delta.text
+                    yield answer, 'not_finished'
 
         answer = answer.strip()
         self.__add_to_history(chat_id, role="assistant", content=answer)
         tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
 
-        show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
-        plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
         if self.config['show_usage']:
             answer += f"\n\n---\n💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}"
-            if show_plugins_used:
-                answer += f"\n🔌 {', '.join(plugin_names)}"
-        elif show_plugins_used:
-            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
 
         yield answer, tokens_used
+
+    async def __prepare_chat(self, chat_id: int, query: str):
+        """
+        Prepare conversation history for a chat request (shared logic).
+        Returns the common_args dict for the API call.
+        """
+        if chat_id not in self.conversations or self.__max_age_reached(chat_id):
+            self.reset_chat_history(chat_id)
+
+        self.last_updated[chat_id] = datetime.datetime.now()
+
+        self.__add_to_history(chat_id, role="user", content=query)
+
+        # Summarize the chat history if it's too long to avoid excessive token usage
+        token_count = self.__count_tokens(self.conversations[chat_id])
+        exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+        exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
+
+        if exceeded_max_tokens or exceeded_max_history_size:
+            logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+            try:
+                summary = await self.__summarise(self.conversations[chat_id][:-1])
+                logging.debug(f'Summary: {summary}')
+                self.reset_chat_history(chat_id)
+                self.__add_to_history(chat_id, role="assistant", content=summary)
+                self.__add_to_history(chat_id, role="user", content=query)
+            except Exception as e:
+                logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
+                self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
+
+        common_args = {
+            'model': self.config['model'],
+            'messages': self.conversations[chat_id],
+            'system': self.config['assistant_prompt'],
+            'temperature': self.config['temperature'],
+            'max_tokens': self.config['max_tokens'],
+        }
+
+        if self.config['enable_functions']:
+            tools = self.plugin_manager.get_functions_specs()
+            if len(tools) > 0:
+                common_args['tools'] = tools
+
+        return common_args
 
     @retry(
         reraise=True,
@@ -194,62 +232,36 @@ class ClaudeHelper:
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response(self, chat_id: int, query: str, stream=False):
+    async def __common_get_chat_response(self, chat_id: int, query: str):
         """
-        Request a response from the Claude model.
-        :param chat_id: The chat ID
-        :param query: The query to send to the model
-        :param stream: Whether to stream the response
-        :return: The response from the model
+        Request a non-streaming response from the Claude model.
         """
         bot_language = self.config['bot_language']
         try:
-            if chat_id not in self.conversations or self.__max_age_reached(chat_id):
-                self.reset_chat_history(chat_id)
-
-            self.last_updated[chat_id] = datetime.datetime.now()
-
-            self.__add_to_history(chat_id, role="user", content=query)
-
-            # Summarize the chat history if it's too long to avoid excessive token usage
-            token_count = self.__count_tokens(self.conversations[chat_id])
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
-            exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
-
-            if exceeded_max_tokens or exceeded_max_history_size:
-                logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
-                try:
-                    summary = await self.__summarise(self.conversations[chat_id][:-1])
-                    logging.debug(f'Summary: {summary}')
-                    self.reset_chat_history(chat_id)
-                    self.__add_to_history(chat_id, role="assistant", content=summary)
-                    self.__add_to_history(chat_id, role="user", content=query)
-                except Exception as e:
-                    logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
-                    self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
-
-            common_args = {
-                'model': self.config['model'],
-                'messages': self.conversations[chat_id],
-                'system': self.config['assistant_prompt'],
-                'temperature': self.config['temperature'],
-                'max_tokens': self.config['max_tokens'],
-            }
-
-            if self.config['enable_functions']:
-                tools = self.plugin_manager.get_functions_specs()
-                if len(tools) > 0:
-                    common_args['tools'] = tools
-
-            if stream and not self.config['enable_functions']:
-                # Only use native streaming when tools are not enabled
-                # (tool calls require non-streaming to handle the back-and-forth)
-                async with self.client.messages.stream(**common_args) as stream_response:
-                    async for event in stream_response:
-                        yield event
-                return
-
+            common_args = await self.__prepare_chat(chat_id, query)
             return await self.client.messages.create(**common_args)
+
+        except anthropic.RateLimitError as e:
+            raise e
+
+        except anthropic.BadRequestError as e:
+            raise Exception(f"⚠️ _{localized_text('claude_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+
+        except Exception as e:
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
+    async def __common_get_chat_response_stream(self, chat_id: int, query: str):
+        """
+        Request a streaming response from the Claude model (no tool use).
+        """
+        bot_language = self.config['bot_language']
+        try:
+            common_args = await self.__prepare_chat(chat_id, query)
+            # Remove tools for streaming — tool calls require non-streaming
+            common_args.pop('tools', None)
+            async with self.client.messages.stream(**common_args) as stream_response:
+                async for event in stream_response:
+                    yield event
 
         except anthropic.RateLimitError as e:
             raise e
@@ -323,72 +335,88 @@ class ClaudeHelper:
         response = await self.client.messages.create(**common_args)
         return await self.__handle_tool_call(chat_id, response, times + 1, plugins_used)
 
+    async def __prepare_vision_chat(self, chat_id: int, content: list):
+        """
+        Prepare conversation history for a vision request (shared logic).
+        Returns the common_args dict for the API call.
+        """
+        if chat_id not in self.conversations or self.__max_age_reached(chat_id):
+            self.reset_chat_history(chat_id)
+
+        self.last_updated[chat_id] = datetime.datetime.now()
+
+        if self.config['enable_vision_follow_up_questions']:
+            self.__add_to_history(chat_id, role="user", content=content)
+        else:
+            for message in content:
+                if message['type'] == 'text':
+                    query = message['text']
+                    break
+            self.__add_to_history(chat_id, role="user", content=query)
+
+        # Summarize the chat history if it's too long
+        token_count = self.__count_tokens(self.conversations[chat_id])
+        exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+        exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
+
+        if exceeded_max_tokens or exceeded_max_history_size:
+            logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
+            try:
+                last = self.conversations[chat_id][-1]
+                summary = await self.__summarise(self.conversations[chat_id][:-1])
+                logging.debug(f'Summary: {summary}')
+                self.reset_chat_history(chat_id)
+                self.__add_to_history(chat_id, role="assistant", content=summary)
+                self.conversations[chat_id] += [last]
+            except Exception as e:
+                logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
+                self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
+
+        # Build the message with vision content
+        message = {'role': 'user', 'content': content}
+
+        return {
+            'model': self.config['model'],
+            'messages': self.conversations[chat_id][:-1] + [message],
+            'system': self.config['assistant_prompt'],
+            'temperature': self.config['temperature'],
+            'max_tokens': self.config['vision_max_tokens'],
+        }
+
     @retry(
         reraise=True,
         retry=retry_if_exception_type(anthropic.RateLimitError),
         wait=wait_fixed(20),
         stop=stop_after_attempt(3)
     )
-    async def __common_get_chat_response_vision(self, chat_id: int, content: list, stream=False):
+    async def __common_get_chat_response_vision(self, chat_id: int, content: list):
         """
-        Request a vision response from the Claude model.
-        :param chat_id: The chat ID
-        :param content: The content list with text and image blocks
-        :param stream: Whether to stream the response
-        :return: The response from the model
+        Request a non-streaming vision response from the Claude model.
         """
         bot_language = self.config['bot_language']
         try:
-            if chat_id not in self.conversations or self.__max_age_reached(chat_id):
-                self.reset_chat_history(chat_id)
-
-            self.last_updated[chat_id] = datetime.datetime.now()
-
-            if self.config['enable_vision_follow_up_questions']:
-                self.__add_to_history(chat_id, role="user", content=content)
-            else:
-                for message in content:
-                    if message['type'] == 'text':
-                        query = message['text']
-                        break
-                self.__add_to_history(chat_id, role="user", content=query)
-
-            # Summarize the chat history if it's too long
-            token_count = self.__count_tokens(self.conversations[chat_id])
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
-            exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
-
-            if exceeded_max_tokens or exceeded_max_history_size:
-                logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
-                try:
-                    last = self.conversations[chat_id][-1]
-                    summary = await self.__summarise(self.conversations[chat_id][:-1])
-                    logging.debug(f'Summary: {summary}')
-                    self.reset_chat_history(chat_id)
-                    self.__add_to_history(chat_id, role="assistant", content=summary)
-                    self.conversations[chat_id] += [last]
-                except Exception as e:
-                    logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
-                    self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
-
-            # Build the message with vision content
-            message = {'role': 'user', 'content': content}
-
-            common_args = {
-                'model': self.config['model'],
-                'messages': self.conversations[chat_id][:-1] + [message],
-                'system': self.config['assistant_prompt'],
-                'temperature': self.config['temperature'],
-                'max_tokens': self.config['vision_max_tokens'],
-            }
-
-            if stream:
-                async with self.client.messages.stream(**common_args) as stream_response:
-                    async for event in stream_response:
-                        yield event
-                return
-
+            common_args = await self.__prepare_vision_chat(chat_id, content)
             return await self.client.messages.create(**common_args)
+
+        except anthropic.RateLimitError as e:
+            raise e
+
+        except anthropic.BadRequestError as e:
+            raise Exception(f"⚠️ _{localized_text('claude_invalid', bot_language)}._ ⚠️\n{str(e)}") from e
+
+        except Exception as e:
+            raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
+
+    async def __common_get_chat_response_vision_stream(self, chat_id: int, content: list):
+        """
+        Request a streaming vision response from the Claude model.
+        """
+        bot_language = self.config['bot_language']
+        try:
+            common_args = await self.__prepare_vision_chat(chat_id, content)
+            async with self.client.messages.stream(**common_args) as stream_response:
+                async for event in stream_response:
+                    yield event
 
         except anthropic.RateLimitError as e:
             raise e
@@ -443,13 +471,12 @@ class ClaudeHelper:
             {'type': 'text', 'text': prompt}
         ]
 
-        response = self.__common_get_chat_response_vision(chat_id, content, stream=True)
-
         answer = ''
-        async for chunk in response:
-            if hasattr(chunk, 'delta') and hasattr(chunk.delta, 'text'):
-                answer += chunk.delta.text
-                yield answer, 'not_finished'
+        async for chunk in self.__common_get_chat_response_vision_stream(chat_id, content):
+            if hasattr(chunk, 'type') and chunk.type == 'content_block_delta':
+                if hasattr(chunk.delta, 'text'):
+                    answer += chunk.delta.text
+                    yield answer, 'not_finished'
 
         answer = answer.strip()
         self.__add_to_history(chat_id, role="assistant", content=answer)
