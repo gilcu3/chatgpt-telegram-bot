@@ -153,8 +153,13 @@ class ClaudeHelper:
         """
         plugins_used = ()
 
+        has_tools = False
         if self.config['enable_functions']:
+            has_tools = len(self.plugin_manager.get_functions_specs()) > 0
+
+        if has_tools:
             # Tool calls require non-streaming: get full response, handle tools, yield result
+            logging.info('Streaming fallback: ENABLE_FUNCTIONS is true and tools are configured, using non-streaming response path.')
             response = await self.__common_get_chat_response(chat_id, query, group_context=group_context)
             response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
             if is_direct_result(response):
