@@ -44,6 +44,7 @@ def main():
         'enable_functions': os.environ.get('ENABLE_FUNCTIONS', 'true').lower() == 'true',
         'functions_max_consecutive_calls': int(os.environ.get('FUNCTIONS_MAX_CONSECUTIVE_CALLS', 10)),
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
+        'telegram_native_stream': os.environ.get('TELEGRAM_NATIVE_STREAM', 'false').lower() == 'true',
         'show_plugins_used': os.environ.get('SHOW_PLUGINS_USED', 'false').lower() == 'true',
         'enable_vision_follow_up_questions': os.environ.get('ENABLE_VISION_FOLLOW_UP_QUESTIONS', 'true').lower() == 'true',
         'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),

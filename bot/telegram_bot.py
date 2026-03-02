@@ -60,8 +60,6 @@ class ChatGPTTelegramBot:
         self.inline_queries_cache = {}
         self.group_chat_messages: dict[int, deque] = {}  # {chat_id: rolling buffer of recent messages}
         self.telegram_native_stream = self.config.get('telegram_native_stream', False)
-        logging.info('Telegram streaming config: STREAM=%s TELEGRAM_NATIVE_STREAM=%s',
-                     self.config.get('stream', False), self.telegram_native_stream)
         if self.telegram_native_stream:
             logging.info('TELEGRAM_NATIVE_STREAM enabled, using legacy edit-based transport until Bot API adapter is added.')
 
