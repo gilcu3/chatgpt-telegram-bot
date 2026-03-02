@@ -68,6 +68,7 @@ def main():
         'token_price': float(os.environ.get('TOKEN_PRICE', 0.003)),
         'vision_token_price': float(os.environ.get('VISION_TOKEN_PRICE', '0.003')),
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
+        'telegram_native_stream': os.environ.get('TELEGRAM_NATIVE_STREAM', 'false').lower() == 'true',
     }
 
     plugin_config = {
