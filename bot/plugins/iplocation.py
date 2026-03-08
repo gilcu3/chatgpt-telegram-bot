@@ -30,7 +30,7 @@ class IpLocationPlugin(Plugin):
         BASE_URL = "https://api.ip.fm/?ip={}"
         url = BASE_URL.format(ip)
         try:
-            response = requests.get(url)
+            response = requests.get(url, timeout=10)
             response_data = response.json()
             country = response_data.get('data', {}).get('country', "None")
             subdivisions = response_data.get('data', {}).get('subdivisions', "None")

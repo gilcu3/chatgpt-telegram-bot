@@ -1,3 +1,4 @@
+import fcntl
 import json
 import logging
 import os
@@ -30,7 +31,11 @@ class UserMemory:
     def _save(self):
         pathlib.Path(self.memory_dir).mkdir(exist_ok=True)
         with open(self.memory_file, "w", encoding="utf-8") as f:
-            json.dump(self.memories, f, indent=2, ensure_ascii=False)
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                json.dump(self.memories, f, indent=2, ensure_ascii=False)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
     def get_user(self, user_id: int) -> dict:
         """Returns the memory dict for a user, or empty dict if none."""

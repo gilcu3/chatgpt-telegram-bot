@@ -323,7 +323,7 @@ def is_direct_result(response: any) -> bool:
         try:
             json_response = json.loads(response)
             return json_response.get('direct_result', False)
-        except:
+        except (json.JSONDecodeError, TypeError, ValueError):
             return False
     else:
         return response.get('direct_result', False)

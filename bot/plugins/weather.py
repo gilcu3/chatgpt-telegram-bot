@@ -62,21 +62,24 @@ class WeatherPlugin(Plugin):
               f'?latitude={kwargs["latitude"]}' \
               f'&longitude={kwargs["longitude"]}' \
               f'&temperature_unit={kwargs["unit"]}'
-        if function_name == 'get_current_weather':
-            url += '&current_weather=true'
-            return requests.get(url).json()
+        try:
+            if function_name == 'get_current_weather':
+                url += '&current_weather=true'
+                return requests.get(url, timeout=10).json()
 
-        elif function_name == 'get_forecast_weather':
-            url += '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_mean,'
-            url += f'&forecast_days={kwargs["forecast_days"]}'
-            url += '&timezone=auto'
-            response = requests.get(url).json()
-            results = {}
-            for i, time in enumerate(response["daily"]["time"]):
-                results[datetime.strptime(time, "%Y-%m-%d").strftime("%A, %B %d, %Y")] = {
-                    "weathercode": response["daily"]["weathercode"][i],
-                    "temperature_2m_max": response["daily"]["temperature_2m_max"][i],
-                    "temperature_2m_min": response["daily"]["temperature_2m_min"][i],
-                    "precipitation_probability_mean": response["daily"]["precipitation_probability_mean"][i]
-                }
-            return {"today": datetime.today().strftime("%A, %B %d, %Y"), "forecast": results}
+            elif function_name == 'get_forecast_weather':
+                url += '&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_mean,'
+                url += f'&forecast_days={kwargs["forecast_days"]}'
+                url += '&timezone=auto'
+                response = requests.get(url, timeout=10).json()
+                results = {}
+                for i, time in enumerate(response["daily"]["time"]):
+                    results[datetime.strptime(time, "%Y-%m-%d").strftime("%A, %B %d, %Y")] = {
+                        "weathercode": response["daily"]["weathercode"][i],
+                        "temperature_2m_max": response["daily"]["temperature_2m_max"][i],
+                        "temperature_2m_min": response["daily"]["temperature_2m_min"][i],
+                        "precipitation_probability_mean": response["daily"]["precipitation_probability_mean"][i]
+                    }
+                return {"today": datetime.today().strftime("%A, %B %d, %Y"), "forecast": results}
+        except Exception as e:
+            return {"error": str(e)}
