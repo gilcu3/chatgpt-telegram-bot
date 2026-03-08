@@ -1,3 +1,4 @@
+import fcntl
 import os.path
 import pathlib
 import json
@@ -63,6 +64,16 @@ class UsageTracker:
                 "usage_history": {"chat_tokens": {}, "vision_tokens": {}}
             }
 
+    def _save(self):
+        """Write usage data to user file with file locking for concurrency safety."""
+        pathlib.Path(self.logs_dir).mkdir(exist_ok=True)
+        with open(self.user_file, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            try:
+                json.dump(self.usage, f)
+            finally:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
     # token usage functions:
 
     def add_chat_tokens(self, tokens, tokens_price=0.003):
@@ -82,9 +93,7 @@ class UsageTracker:
             # create new entry for current date
             self.usage["usage_history"]["chat_tokens"][str(today)] = tokens
 
-        # write updated token usage to user file
-        with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+        self._save()
 
     def get_current_token_usage(self):
         """Get token amounts used for today and this month
@@ -122,9 +131,7 @@ class UsageTracker:
             # create new entry for current date
             self.usage["usage_history"]["vision_tokens"][str(today)] = tokens
 
-        # write updated token usage to user file
-        with open(self.user_file, "w") as outfile:
-            json.dump(self.usage, outfile)
+        self._save()
 
     def get_current_vision_tokens(self):
         """Get vision tokens for today and this month.
