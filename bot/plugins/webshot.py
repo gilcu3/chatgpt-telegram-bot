@@ -32,7 +32,7 @@ class WebshotPlugin(Plugin):
             image_url = f'https://image.thum.io/get/maxAge/12/width/720/{kwargs["url"]}'
             
             # preload url first
-            requests.get(image_url)
+            requests.get(image_url, timeout=30)
 
             # download the actual image
             response = requests.get(image_url, timeout=30)

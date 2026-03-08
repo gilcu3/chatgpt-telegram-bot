@@ -41,7 +41,7 @@ class WorldTimeApiPlugin(Plugin):
         url = f'https://worldtimeapi.org/api/timezone/{timezone}'
 
         try:
-            wtr = requests.get(url).json().get('datetime')
+            wtr = requests.get(url, timeout=10).json().get('datetime')
             wtr_obj = datetime.strptime(wtr, "%Y-%m-%dT%H:%M:%S.%f%z")
             time_24hr = wtr_obj.strftime("%H:%M:%S")
             time_12hr = wtr_obj.strftime("%I:%M:%S %p")

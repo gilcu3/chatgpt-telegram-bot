@@ -27,4 +27,7 @@ class CryptoPlugin(Plugin):
         }]
 
     async def execute(self, function_name, helper, **kwargs) -> Dict:
-        return requests.get(f"https://api.coincap.io/v2/rates/{kwargs['asset']}").json()
+        try:
+            return requests.get(f"https://api.coincap.io/v2/rates/{kwargs['asset']}", timeout=10).json()
+        except Exception as e:
+            return {"error": str(e)}
