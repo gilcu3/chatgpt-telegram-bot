@@ -1,6 +1,13 @@
+.git
 .env
+.env.*
 .dockerignore
 .github
 .gitignore
 docker-compose.yml
 Dockerfile
+__pycache__
+*.pyc
+usage_logs/
+user_memory/
+uploads/
