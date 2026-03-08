@@ -1,3 +1,4 @@
+import logging
 import os, requests, random, string
 from typing import Dict
 from .plugin import Plugin
@@ -53,8 +54,9 @@ class WebshotPlugin(Plugin):
                 }
             else:
                 return {'result': 'Unable to screenshot website'}
-        except:
+        except Exception as e:
+            logging.warning(f'Webshot failed: {e}')
             if 'image_file_path' in locals():
                 os.remove(image_file_path)
-                
+
             return {'result': 'Unable to screenshot website'}

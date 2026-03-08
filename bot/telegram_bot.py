@@ -94,15 +94,15 @@ class ChatGPTTelegramBot:
                     try:
                         await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
                                                       stream_chunks[-2])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.warning(f'Stream chunk edit failed: {e}')
                     try:
                         sent_message = await update.effective_message.reply_text(
                             message_thread_id=get_thread_id(update),
                             text=content if len(content) > 0 else "..."
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.warning(f'Stream chunk send failed: {e}')
                     continue
 
             cutoff = get_stream_cutoff_values(update, content)
@@ -120,7 +120,8 @@ class ChatGPTTelegramBot:
                         text=text_to_send,
                         parse_mode=constants.ParseMode.MARKDOWN if initial_markdown else None
                     )
-                except Exception:
+                except Exception as e:
+                    logging.warning(f'Initial stream message failed: {e}')
                     continue
 
             elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -141,7 +142,8 @@ class ChatGPTTelegramBot:
                     await asyncio.sleep(0.5)
                     continue
 
-                except Exception:
+                except Exception as e:
+                    logging.warning(f'Stream edit failed: {e}')
                     backoff += 5
                     continue
 
@@ -187,7 +189,8 @@ class ChatGPTTelegramBot:
                                                   message_id=inline_message_id,
                                                   text=f'{query}\n\n{answer_label}:\n{content}',
                                                   is_inline=True)
-                except Exception:
+                except Exception as e:
+                    logging.warning(f'Inline stream initial edit failed: {e}')
                     continue
 
             elif abs(len(content) - len(prev)) > cutoff or tokens != 'not_finished':
@@ -211,7 +214,8 @@ class ChatGPTTelegramBot:
                     backoff += 5
                     await asyncio.sleep(0.5)
                     continue
-                except Exception:
+                except Exception as e:
+                    logging.warning(f'Inline stream edit failed: {e}')
                     backoff += 5
                     continue
 
