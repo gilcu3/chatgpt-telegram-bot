@@ -59,9 +59,9 @@ class ModelRouter:
         if score <= 30:
             return self.haiku_model, "Haiku", "\u26a1"
         elif score <= 65:
-            return self.sonnet_model, "Sonnet", "\ud83d\udca1"
+            return self.sonnet_model, "Sonnet", "\U0001f4a1"
         else:
-            return self.opus_model, "Opus", "\ud83e\udde0"
+            return self.opus_model, "Opus", "\U0001f9e0"
 
     def _calculate_complexity(self, query: str, conversation_length: int = 0) -> int:
         score = 40  # Start at baseline (Sonnet territory)
