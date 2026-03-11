@@ -58,6 +58,13 @@ class ChatGPTTelegramBot:
             BotCommand(command='model', description=localized_text('model_description', bot_language)),
         ]
 
+        # Add /image command if image generation plugin is enabled
+        if any(p for p in self.claude.plugin_manager.plugins
+               if any(s.get('name') == 'generate_image' for s in p.get_spec())):
+            self.commands.append(
+                BotCommand(command='image', description=localized_text('image_description', bot_language))
+            )
+
         # Add scheduler commands if enabled
         if self.scheduler:
             self.commands.extend([
@@ -585,6 +592,49 @@ class ChatGPTTelegramBot:
             message_thread_id=get_thread_id(update),
             text=localized_text('groupmemory_cleared', bot_language)
         )
+
+    async def image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Generate an image from a text prompt. Usage: /image <prompt>
+        """
+        if not await self.check_allowed_and_within_budget(update, context):
+            return
+
+        image_prompt = message_text(update.message)
+        if not image_prompt:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('image_no_prompt', self.config['bot_language'])
+            )
+            return
+
+        # Find the image generation plugin
+        plugin = next(
+            (p for p in self.claude.plugin_manager.plugins
+             if any(s.get('name') == 'generate_image' for s in p.get_spec())),
+            None
+        )
+        if not plugin:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('image_not_enabled', self.config['bot_language'])
+            )
+            return
+
+        async def _generate():
+            result = await plugin.execute('generate_image', self.claude, prompt=image_prompt)
+            if is_direct_result(result):
+                await handle_direct_result(self.config, update, result)
+            else:
+                error_msg = result.get('result', 'Image generation failed')
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    reply_to_message_id=get_reply_to_message_id(self.config, update),
+                    text=f"_{error_msg}_",
+                    parse_mode=constants.ParseMode.MARKDOWN
+                )
+
+        await wrap_with_indicator(update, context, _generate, constants.ChatAction.UPLOAD_PHOTO)
 
     async def remind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -1304,6 +1354,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('mymemory', self.mymemory))
         application.add_handler(CommandHandler('forgetme', self.forgetme))
         application.add_handler(CommandHandler('model', self.model))
+        application.add_handler(CommandHandler('image', self.image))
 
         # Group memory & persona commands
         if self.group_memory:
