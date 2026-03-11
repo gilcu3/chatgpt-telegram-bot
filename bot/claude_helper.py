@@ -84,11 +84,16 @@ class ClaudeHelper:
         """Builds the full system prompt, including memory tool instructions."""
         base = self.config['assistant_prompt']
         memory_supplement = (
-            "\n\nIn group chats, user messages are prefixed with their name "
-            "(e.g. 'Dave: message'). Memory context about a user may appear "
-            "in brackets before their message — use it to personalise your "
-            "responses. When you call remember_user_name or remember_user_fact, "
-            "the user_id is provided automatically — just supply the name or fact."
+            "\n\nYou have persistent memory tools. USE THEM PROACTIVELY — do not wait to be asked."
+            "\n- When a user introduces themselves or states their name, call remember_user_name immediately."
+            "\n- When a user shares significant personal details (job, hobbies, preferences, skills, "
+            "location, life events), call remember_user_fact to store a concise summary."
+            "\n- Do NOT store trivial or transient things (greetings, one-off questions, temporary moods)."
+            "\n- Memory context about the user may appear in brackets before their message — check it "
+            "to avoid storing duplicates. If stored info is outdated or contradicted, call forget_user_fact "
+            "to remove the old fact before storing the corrected one."
+            "\n- In group chats, messages are prefixed with the sender's name (e.g. 'Dave: message')."
+            "\n- The user_id is provided automatically — just supply the name or fact."
         )
         return base + memory_supplement
 
