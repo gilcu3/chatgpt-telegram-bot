@@ -15,6 +15,7 @@ from plugins.whois_ import WhoisPlugin
 from plugins.webshot import WebshotPlugin
 from plugins.iplocation import IpLocationPlugin
 from plugins.url_content import UrlContentPlugin
+from plugins.image_generation import ImageGenerationPlugin
 from plugins.user_memory_plugin import UserMemoryPlugin
 from plugins.group_memory_plugin import GroupMemoryPlugin
 from plugins.scheduler_plugin import SchedulerPlugin
@@ -43,6 +44,7 @@ class PluginManager:
             'webshot': WebshotPlugin,
             'iplocation': IpLocationPlugin,
             'url_content': UrlContentPlugin,
+            'image_generation': ImageGenerationPlugin,
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 

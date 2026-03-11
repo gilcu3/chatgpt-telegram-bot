@@ -65,7 +65,10 @@
     "schedule_set": "Schedule set:",
     "no_active_schedules": "You have no active reminders or schedules.",
     "schedule_cancelled": "Schedule cancelled!",
-    "schedule_not_found": "Schedule not found or doesn't belong to you."
+    "schedule_not_found": "Schedule not found or doesn't belong to you.",
+    "image_description": "Generate an image from a text prompt",
+    "image_no_prompt": "Please provide a description of the image to generate. Usage: /image <description>",
+    "image_not_enabled": "Image generation is not enabled. Add 'image_generation' to PLUGINS to enable it."
   },
   "ar": {
     "help_description": "عرض رسالة المساعدة",
