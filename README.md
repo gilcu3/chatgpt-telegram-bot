@@ -154,6 +154,7 @@ Check out the [official API reference](https://platform.openai.com/docs/api-refe
 | `gtts_text_to_speech`     | Text to speech (powered by Google Translate APIs)                                                                                                   | -                                                                    | `gtts`              |
 | `whois`                   | Query the whois domain database - by [@jnaskali](https://github.com/jnaskali)                                                                       | -                                                                    | `whois`             |
 | `webshot`                 | Screenshot a website from a given url or domain name - by [@noriellecruz](https://github.com/noriellecruz)                                          | -                                                                    |                     |
+| `url_content`             | Fetch and extract text content from a URL for reading, summarizing, or answering questions about webpages                                           | -                                                                    | `beautifulsoup4`    |
 | `auto_tts`                | Text to speech using OpenAI APIs - by [@Jipok](https://github.com/Jipok)                                                                            | -                                                                    |                     |
 
 #### Environment variables
