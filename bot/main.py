@@ -78,6 +78,7 @@ def main():
         'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),
         'vision_max_tokens': vision_max_tokens,
         'enable_smart_routing': enable_smart_routing,
+        'show_routing_info': os.environ.get('SHOW_ROUTING_INFO', 'true').lower() == 'true',
     }
 
     # Scheduler config
