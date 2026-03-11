@@ -809,7 +809,7 @@ class ChatGPTTelegramBot:
             else:
                 trigger_keyword = self.config['group_trigger_keyword']
                 if (prompt is None and trigger_keyword != '') or \
-                   (prompt is not None and not prompt.lower().startswith(trigger_keyword.lower())):
+                   (prompt is not None and trigger_keyword.lower() not in prompt.lower()):
                     logging.info('Vision coming from group chat with wrong keyword, ignoring...')
                     return
 
@@ -928,9 +928,11 @@ class ChatGPTTelegramBot:
         if is_group_chat(update):
             trigger_keyword = self.config['group_trigger_keyword']
 
-            if prompt.lower().startswith(trigger_keyword.lower()) or update.message.text.lower().startswith('/chat'):
-                if prompt.lower().startswith(trigger_keyword.lower()):
-                    prompt = prompt[len(trigger_keyword):].strip()
+            if trigger_keyword.lower() in prompt.lower() or update.message.text.lower().startswith('/chat'):
+                if trigger_keyword.lower() in prompt.lower():
+                    # Remove the trigger keyword from wherever it appears
+                    idx = prompt.lower().index(trigger_keyword.lower())
+                    prompt = (prompt[:idx] + prompt[idx + len(trigger_keyword):]).strip()
 
                 if update.message.reply_to_message and \
                         update.message.reply_to_message.text and \
