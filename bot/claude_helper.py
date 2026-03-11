@@ -3,6 +3,7 @@ import datetime
 import logging
 import os
 import json
+from zoneinfo import ZoneInfo
 import httpx
 
 import anthropic
@@ -108,8 +109,10 @@ class ClaudeHelper:
             "\n- The user_id is provided automatically — just supply the name or fact."
             "\n- In group chats, you also have group memory tools (remember_group_fact, forget_group_fact) "
             "for storing shared group decisions, project context, and recurring topics."
-            "\n- You also have scheduling tools (set_reminder, set_recurring_schedule) to set reminders "
-            "and recurring messages for users. Use them when asked to remind or schedule something."
+            "\n- You also have scheduling tools (set_reminder, set_recurring_schedule, list_reminders, "
+            "cancel_reminder) to set, view, and manage reminders and recurring messages for users."
+            "\n- Each user message is prefixed with a timestamp in [YYYY-MM-DD HH:MM TZ] format. "
+            "Use this to know the current date and time, and to gauge time gaps between messages."
         )
         return base + memory_supplement
 
@@ -633,7 +636,13 @@ class ClaudeHelper:
     def __add_to_history(self, chat_id, role, content):
         """
         Adds a message to the conversation history.
+        For user messages, prepends a timestamp so the model knows the current date/time.
         """
+        if role == "user" and isinstance(content, str):
+            tz = ZoneInfo(self.config.get('default_timezone', 'UTC'))
+            now = datetime.datetime.now(tz)
+            timestamp = now.strftime("%Y-%m-%d %H:%M %Z")
+            content = f"[{timestamp}] {content}"
         self.conversations[chat_id].append({"role": role, "content": content})
 
     async def __summarise(self, conversation) -> str:
