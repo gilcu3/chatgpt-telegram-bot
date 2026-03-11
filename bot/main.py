@@ -79,6 +79,7 @@ def main():
         'vision_max_tokens': vision_max_tokens,
         'enable_smart_routing': enable_smart_routing,
         'show_routing_info': os.environ.get('SHOW_ROUTING_INFO', 'true').lower() == 'true',
+        'default_timezone': os.environ.get('DEFAULT_TIMEZONE', 'UTC'),
     }
 
     # Scheduler config
