@@ -284,9 +284,10 @@ class ClaudeHelper:
 
         self.last_updated[chat_id] = datetime.datetime.now()
 
-        # On fresh conversations, prepend rolling group chat context so Claude
-        # has awareness of what was being discussed before it was called upon.
-        if is_new_conversation and group_context:
+        # Prepend group chat context so Claude has awareness of what was
+        # discussed. For fresh conversations this is the full buffer; for
+        # active conversations it's only messages since the bot last responded.
+        if group_context:
             query = f"{group_context}\n\n{query}"
 
         self.__add_to_history(chat_id, role="user", content=query)
@@ -621,6 +622,10 @@ class ClaudeHelper:
         Resets the conversation history.
         """
         self.conversations[chat_id] = []
+
+    def has_active_conversation(self, chat_id) -> bool:
+        """Returns True if the chat has an active (non-expired) conversation."""
+        return chat_id in self.conversations and not self.__max_age_reached(chat_id)
 
     def __max_age_reached(self, chat_id) -> bool:
         """
