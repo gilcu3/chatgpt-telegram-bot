@@ -32,6 +32,9 @@ MULTI_PART_PATTERNS = re.compile(
     re.IGNORECASE
 )
 
+# Timestamp prefix injected by __add_to_history, e.g. "[2026-03-11 12:36 UTC] "
+TIMESTAMP_PREFIX = re.compile(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2} \S+\]\s*')
+
 
 class ModelRouter:
     """
@@ -64,7 +67,10 @@ class ModelRouter:
             return self.opus_model, "Opus", "\U0001f9e0"
 
     def _calculate_complexity(self, query: str, conversation_length: int = 0) -> int:
-        score = 40  # Start at baseline (Sonnet territory)
+        score = 25  # Start below Sonnet threshold; complexity signals push it up
+
+        # Strip timestamp prefix before analysis so it doesn't affect length/pattern checks
+        query = TIMESTAMP_PREFIX.sub('', query)
 
         # Simple greetings/acknowledgments
         if SIMPLE_PATTERNS.match(query.strip()):
