@@ -239,7 +239,7 @@ class ClaudeHelper:
                 footer_parts.append(f"💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}")
 
             routing_info = self._last_routing_info.get(chat_id)
-            if routing_info:
+            if routing_info and self.config.get('show_routing_info', True):
                 input_tokens = response.usage.input_tokens
                 output_tokens = response.usage.output_tokens
                 footer_parts.append(self._format_routing_footer(routing_info, input_tokens, output_tokens))
