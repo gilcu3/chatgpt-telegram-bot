@@ -84,6 +84,7 @@ class ChatGPTTelegramBot:
         self.last_message = {}
         self.inline_queries_cache = {}
         self.group_chat_messages: dict[int, deque] = {}  # {chat_id: rolling buffer of recent messages}
+        self.group_context_seen: dict[int, int] = {}  # {chat_id: buffer length at last bot invocation}
         self.telegram_native_stream = self.config.get('telegram_native_stream', False)
         if self.telegram_native_stream:
             logging.info('TELEGRAM_NATIVE_STREAM enabled, using legacy edit-based transport until Bot API adapter is added.')
@@ -946,10 +947,15 @@ class ChatGPTTelegramBot:
         # users and use the memory tools with the correct user_id.
         prompt = self._prefix_with_user_context(update, prompt)
 
-        # Build group context from the rolling buffer (only used on fresh conversations)
+        # Build group context from the rolling buffer.
+        # For active conversations, only inject messages since the bot last responded.
         group_context = None
         if is_group_chat(update):
-            group_context = self._get_group_context(chat_id)
+            is_active = self.claude.has_active_conversation(chat_id)
+            group_context = self._get_group_context(chat_id, only_new=is_active)
+            # Mark current buffer position so next invocation only gets new messages
+            if chat_id in self.group_chat_messages:
+                self.group_context_seen[chat_id] = len(self.group_chat_messages[chat_id])
 
         try:
             total_tokens = 0
@@ -1214,10 +1220,11 @@ class ChatGPTTelegramBot:
 
         self.group_chat_messages[chat_id].append(f"{sender}: {text}")
 
-    def _get_group_context(self, chat_id: int) -> str | None:
+    def _get_group_context(self, chat_id: int, only_new: bool = False) -> str | None:
         """
         Build a formatted context string from the rolling group chat buffer.
-        Returns None if no buffered messages are available.
+        If only_new=True, returns only messages added since the last bot invocation.
+        Returns None if no relevant messages are available.
         """
         if chat_id not in self.group_chat_messages:
             return None
@@ -1226,11 +1233,17 @@ class ChatGPTTelegramBot:
         if not messages:
             return None
 
+        if only_new:
+            seen = self.group_context_seen.get(chat_id, 0)
+            messages = messages[seen:]
+            if not messages:
+                return None
+            label = "Group messages since you last responded"
+        else:
+            label = "Recent group chat messages for context"
+
         context_lines = "\n".join(messages)
-        return (
-            f"[Recent group chat messages for context:\n"
-            f"{context_lines}]"
-        )
+        return f"[{label}:\n{context_lines}]"
 
     def _prefix_with_user_context(self, update: Update, prompt: str) -> str:
         """
