@@ -58,6 +58,34 @@ class SchedulerPlugin(Plugin):
                     },
                     "required": ["message", "schedule"]
                 }
+            },
+            {
+                "name": "list_reminders",
+                "description": "List all scheduled reminders and recurring schedules for the user. "
+                               "Use this when a user asks what reminders they have, wants to see their "
+                               "schedules, or needs to find a reminder ID to cancel. "
+                               "The user_id is provided automatically.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "cancel_reminder",
+                "description": "Cancel a scheduled reminder or recurring schedule by its ID. "
+                               "Use list_reminders first if you need to find the ID. "
+                               "The user_id is provided automatically.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "job_id": {
+                            "type": "string",
+                            "description": "The ID of the reminder or schedule to cancel"
+                        }
+                    },
+                    "required": ["job_id"]
+                }
             }
         ]
 
@@ -84,5 +112,27 @@ class SchedulerPlugin(Plugin):
             if job_id:
                 return {"result": f"Recurring schedule set: {result} (ID: {job_id}): {message}"}
             return {"error": result}
+
+        elif function_name == "list_reminders":
+            jobs = self.scheduler.get_user_jobs(user_id)
+            if not jobs:
+                return {"result": "No scheduled reminders or recurring schedules found."}
+            summaries = []
+            for job in jobs:
+                if job.get("recurring"):
+                    days_desc = "daily"
+                    if job.get("days") is not None:
+                        day_labels = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
+                        days_desc = ", ".join(day_labels[d] for d in job["days"])
+                    summaries.append(f"[{job['id']}] Recurring ({days_desc} at {job['time']}): {job['message']}")
+                else:
+                    summaries.append(f"[{job['id']}] Reminder at {job.get('run_at', 'unknown')}: {job['message']}")
+            return {"result": "\n".join(summaries)}
+
+        elif function_name == "cancel_reminder":
+            job_id = kwargs["job_id"]
+            if self.scheduler.cancel_job(job_id, user_id):
+                return {"result": f"Cancelled reminder/schedule {job_id}."}
+            return {"error": f"Could not find or cancel job {job_id}. It may not exist or belong to another user."}
 
         return {"error": f"Unknown function: {function_name}"}
