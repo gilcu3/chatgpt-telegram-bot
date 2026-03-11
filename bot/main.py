@@ -7,6 +7,9 @@ from plugin_manager import PluginManager
 from claude_helper import ClaudeHelper, default_max_tokens, are_functions_available
 from telegram_bot import ChatGPTTelegramBot
 from user_memory import UserMemory
+from group_memory import GroupMemory
+from model_router import ModelRouter
+from scheduler import BotScheduler
 
 
 def main():
@@ -52,6 +55,9 @@ def main():
     model = os.environ.get('CLAUDE_MODEL', 'claude-sonnet-4-5-20250929')
     max_tokens_default = default_max_tokens(model=model)
     max_tokens = int(max_tokens_raw) if max_tokens_raw else max_tokens_default
+    # Smart routing config
+    enable_smart_routing = os.environ.get('ENABLE_SMART_ROUTING', 'false').lower() == 'true'
+
     claude_config = {
         'api_key': api_key,
         'show_usage': os.environ.get('SHOW_USAGE', 'false').lower() == 'true',
@@ -71,7 +77,12 @@ def main():
         'enable_vision_follow_up_questions': os.environ.get('ENABLE_VISION_FOLLOW_UP_QUESTIONS', 'true').lower() == 'true',
         'vision_prompt': os.environ.get('VISION_PROMPT', 'What is in this image'),
         'vision_max_tokens': vision_max_tokens,
+        'enable_smart_routing': enable_smart_routing,
     }
+
+    # Scheduler config
+    enable_scheduler = os.environ.get('ENABLE_SCHEDULER', 'true').lower() == 'true'
+    default_timezone = os.environ.get('DEFAULT_TIMEZONE', 'UTC')
 
     telegram_config = {
         'token': os.environ['TELEGRAM_BOT_TOKEN'],
@@ -91,17 +102,54 @@ def main():
         'vision_token_price': vision_token_price,
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
         'telegram_native_stream': os.environ.get('TELEGRAM_NATIVE_STREAM', 'false').lower() == 'true',
+        'enable_scheduler': enable_scheduler,
     }
 
     plugin_config = {
         'plugins': os.environ.get('PLUGINS', '').split(',')
     }
 
-    # Setup and run Claude and Telegram bot
+    # Setup components
     user_memory = UserMemory()
-    plugin_manager = PluginManager(config=plugin_config, user_memory=user_memory)
-    claude_helper = ClaudeHelper(config=claude_config, plugin_manager=plugin_manager)
-    telegram_bot = ChatGPTTelegramBot(config=telegram_config, claude=claude_helper, user_memory=user_memory)
+    group_memory = GroupMemory()
+
+    # Smart model routing (optional)
+    model_router = None
+    if enable_smart_routing:
+        router_config = {
+            'routing_haiku_model': os.environ.get('ROUTING_HAIKU_MODEL', 'claude-haiku-4-5-20251001'),
+            'routing_sonnet_model': os.environ.get('ROUTING_SONNET_MODEL', 'claude-sonnet-4-5-20250929'),
+            'routing_opus_model': os.environ.get('ROUTING_OPUS_MODEL', 'claude-opus-4-6'),
+        }
+        model_router = ModelRouter(config=router_config)
+        logging.info('Smart model routing enabled')
+
+    # Scheduler (optional)
+    scheduler = None
+    if enable_scheduler:
+        scheduler = BotScheduler(default_timezone=default_timezone)
+        logging.info('Scheduler enabled')
+
+    # Wire everything together
+    plugin_manager = PluginManager(
+        config=plugin_config,
+        user_memory=user_memory,
+        group_memory=group_memory,
+        scheduler=scheduler,
+    )
+    claude_helper = ClaudeHelper(
+        config=claude_config,
+        plugin_manager=plugin_manager,
+        model_router=model_router,
+        group_memory=group_memory,
+    )
+    telegram_bot = ChatGPTTelegramBot(
+        config=telegram_config,
+        claude=claude_helper,
+        user_memory=user_memory,
+        group_memory=group_memory,
+        scheduler=scheduler,
+    )
     telegram_bot.run()
 
 

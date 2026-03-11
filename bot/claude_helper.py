@@ -67,22 +67,34 @@ class ClaudeHelper:
     Claude API helper class.
     """
 
-    def __init__(self, config: dict, plugin_manager: PluginManager):
+    def __init__(self, config: dict, plugin_manager: PluginManager, model_router=None, group_memory=None):
         """
         Initializes the Claude helper class with the given configuration.
         :param config: A dictionary containing the Claude configuration
         :param plugin_manager: The plugin manager
+        :param model_router: Optional ModelRouter for smart model selection
+        :param group_memory: Optional GroupMemory for group-scoped personas and facts
         """
         http_client = httpx.AsyncClient(proxy=config['proxy']) if config.get('proxy') else None
         self.client = anthropic.AsyncAnthropic(api_key=config['api_key'], http_client=http_client)
         self.config = config
         self.plugin_manager = plugin_manager
+        self.model_router = model_router
+        self.group_memory = group_memory
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
+        self.model_overrides: dict[int: str] = {}  # {chat_id: model_id} per-chat overrides
+        self._last_routing_info: dict[int: dict] = {}  # {chat_id: routing metadata}
 
-    def _build_system_prompt(self) -> str:
-        """Builds the full system prompt, including memory tool instructions."""
+    def _build_system_prompt(self, chat_id: int = None) -> str:
+        """Builds the full system prompt, including memory tool instructions and optional group persona."""
+        # Use group persona if set, otherwise use default assistant prompt
         base = self.config['assistant_prompt']
+        if chat_id and self.group_memory:
+            persona = self.group_memory.get_persona(chat_id)
+            if persona:
+                base = persona
+
         memory_supplement = (
             "\n\nYou have persistent memory tools. USE THEM PROACTIVELY — do not wait to be asked."
             "\n- When a user introduces themselves or states their name, call remember_user_name immediately."
@@ -94,8 +106,38 @@ class ClaudeHelper:
             "to remove the old fact before storing the corrected one."
             "\n- In group chats, messages are prefixed with the sender's name (e.g. 'Dave: message')."
             "\n- The user_id is provided automatically — just supply the name or fact."
+            "\n- In group chats, you also have group memory tools (remember_group_fact, forget_group_fact) "
+            "for storing shared group decisions, project context, and recurring topics."
+            "\n- You also have scheduling tools (set_reminder, set_recurring_schedule) to set reminders "
+            "and recurring messages for users. Use them when asked to remind or schedule something."
         )
         return base + memory_supplement
+
+    def set_model_override(self, chat_id: int, model: str):
+        """Set a per-chat model override."""
+        self.model_overrides[chat_id] = model
+
+    def clear_model_override(self, chat_id: int):
+        """Clear per-chat model override, returning to auto-routing or default."""
+        self.model_overrides.pop(chat_id, None)
+
+    def get_model_override(self, chat_id: int) -> str | None:
+        """Get the current model override for a chat, or None."""
+        return self.model_overrides.get(chat_id)
+
+    def _format_routing_footer(self, routing_info: dict, input_tokens: int, output_tokens: int) -> str:
+        """Format the smart routing footer with model info and savings."""
+        emoji = routing_info['emoji']
+        label = routing_info['label']
+        model = routing_info['model']
+
+        savings_text = ""
+        if self.model_router:
+            savings = self.model_router.calculate_savings(model, input_tokens, output_tokens)
+            if savings is not None and savings > 0:
+                savings_text = f" — saved ~${savings:.4f} vs Opus"
+
+        return f"{emoji} {label}{savings_text}"
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
@@ -119,7 +161,7 @@ class ClaudeHelper:
         plugins_used = ()
         response = await self.__common_get_chat_response(chat_id, query, group_context=group_context)
         if self.config['enable_functions']:
-            response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
+            response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id, chat_id_for_plugins=chat_id)
             if is_direct_result(response):
                 return response, '0'
 
@@ -135,15 +177,25 @@ class ClaudeHelper:
         show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
         plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
         total_tokens = response.usage.input_tokens + response.usage.output_tokens
+
+        footer_parts = []
         if self.config['show_usage']:
-            answer += "\n\n---\n" \
-                      f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}" \
-                      f" ({str(response.usage.input_tokens)} {localized_text('prompt', bot_language)}," \
-                      f" {str(response.usage.output_tokens)} {localized_text('completion', bot_language)})"
-            if show_plugins_used:
-                answer += f"\n🔌 {', '.join(plugin_names)}"
-        elif show_plugins_used:
-            answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+            footer_parts.append(
+                f"💰 {str(total_tokens)} {localized_text('stats_tokens', bot_language)}"
+                f" ({str(response.usage.input_tokens)} {localized_text('prompt', bot_language)},"
+                f" {str(response.usage.output_tokens)} {localized_text('completion', bot_language)})"
+            )
+
+        # Smart routing footer
+        routing_info = self._last_routing_info.get(chat_id)
+        if routing_info:
+            footer_parts.append(self._format_routing_footer(routing_info, response.usage.input_tokens, response.usage.output_tokens))
+
+        if show_plugins_used:
+            footer_parts.append(f"🔌 {', '.join(plugin_names)}")
+
+        if footer_parts:
+            answer += "\n\n---\n" + "\n".join(footer_parts)
 
         return answer, total_tokens
 
@@ -166,7 +218,7 @@ class ClaudeHelper:
             # Tool calls require non-streaming: get full response, handle tools, yield result
             logging.info('Streaming fallback: ENABLE_FUNCTIONS is true and tools are configured, using non-streaming response path.')
             response = await self.__common_get_chat_response(chat_id, query, group_context=group_context)
-            response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id)
+            response, plugins_used = await self.__handle_tool_call(chat_id, response, user_id=user_id, chat_id_for_plugins=chat_id)
             if is_direct_result(response):
                 yield response, '0'
                 return
@@ -181,12 +233,22 @@ class ClaudeHelper:
 
             show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
             plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
+
+            footer_parts = []
             if self.config['show_usage']:
-                answer += f"\n\n---\n💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}"
-                if show_plugins_used:
-                    answer += f"\n🔌 {', '.join(plugin_names)}"
-            elif show_plugins_used:
-                answer += f"\n\n---\n🔌 {', '.join(plugin_names)}"
+                footer_parts.append(f"💰 {tokens_used} {localized_text('stats_tokens', self.config['bot_language'])}")
+
+            routing_info = self._last_routing_info.get(chat_id)
+            if routing_info:
+                input_tokens = response.usage.input_tokens
+                output_tokens = response.usage.output_tokens
+                footer_parts.append(self._format_routing_footer(routing_info, input_tokens, output_tokens))
+
+            if show_plugins_used:
+                footer_parts.append(f"🔌 {', '.join(plugin_names)}")
+
+            if footer_parts:
+                answer += "\n\n---\n" + "\n".join(footer_parts)
 
             yield answer, tokens_used
             return
@@ -243,10 +305,37 @@ class ClaudeHelper:
                 logging.warning(f'Error while summarising chat history: {str(e)}. Popping elements instead...')
                 self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
+        # Determine model: per-chat override > smart routing > config default
+        model = self.config['model']
+        self._last_routing_info.pop(chat_id, None)
+
+        if chat_id in self.model_overrides:
+            model = self.model_overrides[chat_id]
+        elif self.model_router and self.config.get('enable_smart_routing'):
+            conversation_length = len(self.conversations[chat_id])
+            routed_model, label, emoji = self.model_router.route(query, conversation_length)
+            model = routed_model
+            self._last_routing_info[chat_id] = {
+                'model': routed_model, 'label': label, 'emoji': emoji
+            }
+            logging.info(f'Smart routing selected {label} ({routed_model}) for chat {chat_id}')
+
+        # Inject group memory context into query if available
+        if self.group_memory:
+            group_ctx = self.group_memory.get_context_string(chat_id)
+            if group_ctx:
+                # Prepend group context to the last user message
+                last_msg = self.conversations[chat_id][-1]
+                if last_msg['role'] == 'user' and isinstance(last_msg['content'], str):
+                    self.conversations[chat_id][-1] = {
+                        'role': 'user',
+                        'content': f"{group_ctx}\n{last_msg['content']}"
+                    }
+
         common_args = {
-            'model': self.config['model'],
+            'model': model,
             'messages': self.conversations[chat_id],
-            'system': self._build_system_prompt(),
+            'system': self._build_system_prompt(chat_id=chat_id),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['max_tokens'],
         }
@@ -304,7 +393,7 @@ class ClaudeHelper:
         except Exception as e:
             raise Exception(f"⚠️ _{localized_text('error', bot_language)}._ ⚠️\n{str(e)}") from e
 
-    async def __handle_tool_call(self, chat_id, response, times=0, plugins_used=(), user_id=None):
+    async def __handle_tool_call(self, chat_id, response, times=0, plugins_used=(), user_id=None, chat_id_for_plugins=None):
         """
         Handle tool use blocks in the Claude response.
         """
@@ -322,7 +411,7 @@ class ClaudeHelper:
             tool_use_id = tool_block.id
 
             logging.info(f'Calling function {function_name} with arguments {arguments}')
-            function_response = await self.plugin_manager.call_function(function_name, self, arguments, user_id=user_id)
+            function_response = await self.plugin_manager.call_function(function_name, self, arguments, user_id=user_id, chat_id=chat_id_for_plugins)
 
             if function_name not in plugins_used:
                 plugins_used += (function_name,)
@@ -352,12 +441,17 @@ class ClaudeHelper:
         # Add tool results as user message
         self.__add_to_history(chat_id, role="user", content=tool_results)
 
-        # Call Claude again with the tool results
+        # Call Claude again with the tool results — use routed model if available
         tools = self.plugin_manager.get_functions_specs()
+        routing_info = self._last_routing_info.get(chat_id)
+        model = routing_info['model'] if routing_info else self.config['model']
+        if chat_id in self.model_overrides:
+            model = self.model_overrides[chat_id]
+
         common_args = {
-            'model': self.config['model'],
+            'model': model,
             'messages': self.conversations[chat_id],
-            'system': self._build_system_prompt(),
+            'system': self._build_system_prompt(chat_id=chat_id),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['max_tokens'],
         }
@@ -365,7 +459,7 @@ class ClaudeHelper:
             common_args['tools'] = tools
 
         response = await self.client.messages.create(**common_args)
-        return await self.__handle_tool_call(chat_id, response, times + 1, plugins_used, user_id=user_id)
+        return await self.__handle_tool_call(chat_id, response, times + 1, plugins_used, user_id=user_id, chat_id_for_plugins=chat_id_for_plugins)
 
     async def __prepare_vision_chat(self, chat_id: int, content: list):
         """
@@ -410,7 +504,7 @@ class ClaudeHelper:
         return {
             'model': self.config['model'],
             'messages': self.conversations[chat_id][:-1] + [message],
-            'system': self._build_system_prompt(),
+            'system': self._build_system_prompt(chat_id=chat_id),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['vision_max_tokens'],
         }

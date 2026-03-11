@@ -16,6 +16,8 @@ from plugins.webshot import WebshotPlugin
 from plugins.iplocation import IpLocationPlugin
 from plugins.url_content import UrlContentPlugin
 from plugins.user_memory_plugin import UserMemoryPlugin
+from plugins.group_memory_plugin import GroupMemoryPlugin
+from plugins.scheduler_plugin import SchedulerPlugin
 
 
 class PluginManager:
@@ -23,7 +25,7 @@ class PluginManager:
     A class to manage the plugins and call the correct functions
     """
 
-    def __init__(self, config, user_memory=None):
+    def __init__(self, config, user_memory=None, group_memory=None, scheduler=None):
         enabled_plugins = config.get('plugins', [])
         plugin_mapping = {
             'wolfram': WolframAlphaPlugin,
@@ -48,13 +50,21 @@ class PluginManager:
         if user_memory is not None:
             self.plugins.append(UserMemoryPlugin(user_memory))
 
+        # Group memory plugin is always active when group memory is provided
+        if group_memory is not None:
+            self.plugins.append(GroupMemoryPlugin(group_memory))
+
+        # Scheduler plugin is always active when scheduler is provided
+        if scheduler is not None:
+            self.plugins.append(SchedulerPlugin(scheduler))
+
     def get_functions_specs(self):
         """
         Return the list of function specs that can be called by the model
         """
         return [spec for specs in map(lambda plugin: plugin.get_spec(), self.plugins) for spec in specs]
 
-    async def call_function(self, function_name, helper, arguments, user_id=None):
+    async def call_function(self, function_name, helper, arguments, user_id=None, chat_id=None):
         """
         Call a function based on the name and parameters provided
         """
@@ -64,6 +74,8 @@ class PluginManager:
         parsed_args = json.loads(arguments)
         if user_id is not None:
             parsed_args['_user_id'] = user_id
+        if chat_id is not None:
+            parsed_args['_chat_id'] = chat_id
         return json.dumps(await plugin.execute(function_name, helper, **parsed_args), default=str)
 
     def get_plugin_source_name(self, function_name) -> str:
