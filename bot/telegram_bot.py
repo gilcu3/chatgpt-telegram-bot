@@ -20,9 +20,11 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     edit_message_with_retry, get_stream_cutoff_values, is_allowed, get_remaining_budget, is_admin, is_within_budget, \
     get_reply_to_message_id, add_chat_request_to_usage_tracker, error_handler, is_direct_result, handle_direct_result, \
     cleanup_intermediate_files
-from claude_helper import ClaudeHelper, localized_text
+from claude_helper import ClaudeHelper, localized_text, CLAUDE_MODELS
 from usage_tracker import UsageTracker
 from user_memory import UserMemory
+from group_memory import GroupMemory
+from scheduler import BotScheduler
 
 
 class ChatGPTTelegramBot:
@@ -30,16 +32,21 @@ class ChatGPTTelegramBot:
     Class representing a Claude Telegram Bot.
     """
 
-    def __init__(self, config: dict, claude: ClaudeHelper, user_memory: UserMemory):
+    def __init__(self, config: dict, claude: ClaudeHelper, user_memory: UserMemory,
+                 group_memory: GroupMemory = None, scheduler: BotScheduler = None):
         """
         Initializes the bot with the given configuration and Claude helper object.
         :param config: A dictionary containing the bot configuration
         :param claude: ClaudeHelper object
         :param user_memory: UserMemory object for persistent per-user memory
+        :param group_memory: GroupMemory object for persistent per-group memory
+        :param scheduler: BotScheduler object for reminders and recurring messages
         """
         self.config = config
         self.claude = claude
         self.user_memory = user_memory
+        self.group_memory = group_memory
+        self.scheduler = scheduler
         bot_language = self.config['bot_language']
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
@@ -48,11 +55,29 @@ class ChatGPTTelegramBot:
             BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
             BotCommand(command='mymemory', description=localized_text('mymemory_description', bot_language)),
             BotCommand(command='forgetme', description=localized_text('forgetme_description', bot_language)),
+            BotCommand(command='model', description=localized_text('model_description', bot_language)),
         ]
+
+        # Add scheduler commands if enabled
+        if self.scheduler:
+            self.commands.extend([
+                BotCommand(command='remind', description=localized_text('remind_description', bot_language)),
+                BotCommand(command='schedule', description=localized_text('schedule_description', bot_language)),
+                BotCommand(command='myschedules', description=localized_text('myschedules_description', bot_language)),
+                BotCommand(command='cancelschedule', description=localized_text('cancelschedule_description', bot_language)),
+            ])
 
         self.group_commands = [BotCommand(
             command='chat', description=localized_text('chat_description', bot_language)
         )] + self.commands
+
+        # Add group-only commands
+        if self.group_memory:
+            self.group_commands.extend([
+                BotCommand(command='persona', description=localized_text('persona_description', bot_language)),
+                BotCommand(command='groupmemory', description=localized_text('groupmemory_description', bot_language)),
+                BotCommand(command='forgetgroup', description=localized_text('forgetgroup_description', bot_language)),
+            ])
         self.disallowed_message = localized_text('disallowed', bot_language)
         self.budget_limit_message = localized_text('budget_limit', bot_language)
         self.usage = {}
@@ -394,6 +419,377 @@ class ChatGPTTelegramBot:
             message_thread_id=get_thread_id(update),
             text=localized_text('forgetme_done', bot_language)
         )
+
+    async def model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        View or set the model for this chat. /model shows current, /model <name> sets override.
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        chat_id = update.effective_chat.id
+        bot_language = self.config['bot_language']
+        args = context.args
+
+        if not args:
+            # Show current model
+            override = self.claude.get_model_override(chat_id)
+            if override:
+                text = f"{localized_text('model_current', bot_language)}: {override} (override)"
+            elif self.config.get('enable_smart_routing', False):
+                text = f"{localized_text('model_current', bot_language)}: auto (smart routing)"
+            else:
+                text = f"{localized_text('model_current', bot_language)}: {self.claude.config['model']}"
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update), text=text
+            )
+            return
+
+        model_arg = args[0].lower()
+        model_shortcuts = {
+            'haiku': 'claude-haiku-4-5-20251001',
+            'sonnet': 'claude-sonnet-4-5-20250929',
+            'opus': 'claude-opus-4-6',
+            'auto': None,
+        }
+
+        if model_arg == 'auto':
+            self.claude.clear_model_override(chat_id)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('model_auto', bot_language)
+            )
+        elif model_arg in model_shortcuts:
+            model_id = model_shortcuts[model_arg]
+            self.claude.set_model_override(chat_id, model_id)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=f"{localized_text('model_set', bot_language)}: {model_arg.capitalize()}"
+            )
+        elif model_arg in CLAUDE_MODELS:
+            self.claude.set_model_override(chat_id, model_arg)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=f"{localized_text('model_set', bot_language)}: {model_arg}"
+            )
+        else:
+            available = ", ".join(list(model_shortcuts.keys()))
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=f"Unknown model. Available: {available}"
+            )
+
+    async def persona(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Set, view, or clear the bot persona for this group. Admin-only.
+        """
+        if not is_group_chat(update):
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="This command is only available in group chats."
+            )
+            return
+
+        chat_id = update.effective_chat.id
+        bot_language = self.config['bot_language']
+        args_text = " ".join(context.args) if context.args else ""
+
+        if not args_text:
+            # Show current persona
+            persona = self.group_memory.get_persona(chat_id) if self.group_memory else None
+            if persona:
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    text=f"{localized_text('persona_current', bot_language)}:\n\n{persona}"
+                )
+            else:
+                await update.effective_message.reply_text(
+                    message_thread_id=get_thread_id(update),
+                    text="No persona set. Default assistant personality is active."
+                )
+            return
+
+        # Check if user is a group admin or bot admin
+        if not await self._is_group_admin(update, context):
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('persona_admin_only', bot_language)
+            )
+            return
+
+        if args_text.lower() == 'reset':
+            self.group_memory.clear_persona(chat_id)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('persona_cleared', bot_language)
+            )
+        else:
+            self.group_memory.set_persona(chat_id, args_text)
+            # Reset conversation so persona takes effect immediately
+            self.claude.reset_chat_history(chat_id=chat_id)
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('persona_set', bot_language)
+            )
+
+    async def groupmemory(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Shows what the bot remembers about this group.
+        """
+        if not is_group_chat(update):
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="This command is only available in group chats."
+            )
+            return
+
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        chat_id = update.effective_chat.id
+        bot_language = self.config['bot_language']
+        memory_text = self.group_memory.get_all_formatted(chat_id) if self.group_memory else "No group memories stored."
+        header = localized_text('groupmemory_description', bot_language)
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=f"{header}\n\n{memory_text}"
+        )
+
+    async def forgetgroup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Clears all stored group memory. Admin-only.
+        """
+        if not is_group_chat(update):
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="This command is only available in group chats."
+            )
+            return
+
+        if not await self._is_group_admin(update, context):
+            bot_language = self.config['bot_language']
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('forgetgroup_admin_only', bot_language)
+            )
+            return
+
+        chat_id = update.effective_chat.id
+        if self.group_memory:
+            self.group_memory.clear_group(chat_id)
+        bot_language = self.config['bot_language']
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=localized_text('groupmemory_cleared', bot_language)
+        )
+
+    async def remind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Set a one-time reminder. Usage: /remind <time> <message>
+        Example: /remind in 2 hours Call mom
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        if not self.scheduler:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Scheduler is not enabled."
+            )
+            return
+
+        args_text = " ".join(context.args) if context.args else ""
+        if not args_text:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Usage: /remind <time> <message>\nExample: /remind in 2 hours Call mom"
+            )
+            return
+
+        user_id = update.message.from_user.id
+        chat_id = update.effective_chat.id
+
+        # Try to split time from message — use dateparser to find the time part
+        # Strategy: try progressively shorter prefixes as the time expression
+        import dateparser
+        best_time = None
+        best_message = args_text
+        words = args_text.split()
+        for i in range(min(len(words), 8), 0, -1):
+            time_part = " ".join(words[:i])
+            parsed = dateparser.parse(time_part, settings={'PREFER_DATES_FROM': 'future'})
+            if parsed:
+                best_time = time_part
+                best_message = " ".join(words[i:]) or "Reminder!"
+                break
+
+        if not best_time:
+            # Fallback: treat first half as time, second as message
+            best_time = args_text
+            best_message = "Reminder!"
+
+        job_id, result = self.scheduler.add_reminder(user_id, chat_id, best_message, best_time)
+        bot_language = self.config['bot_language']
+        if job_id:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=f"{localized_text('reminder_set', bot_language)} {result}\n\"{best_message}\" (ID: {job_id})"
+            )
+        else:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=result
+            )
+
+    async def schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Set a recurring schedule. Usage: /schedule <schedule> <message>
+        Example: /schedule every day at 8:00 Good morning briefing
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        if not self.scheduler:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Scheduler is not enabled."
+            )
+            return
+
+        args_text = " ".join(context.args) if context.args else ""
+        if not args_text:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Usage: /schedule <schedule> <message>\nExample: /schedule every day at 8:00 Good morning!"
+            )
+            return
+
+        user_id = update.message.from_user.id
+        chat_id = update.effective_chat.id
+
+        # Split on the time component — everything after "at HH:MM" pattern is the message
+        import re
+        time_match = re.search(r'at\s+\d{1,2}:?\d{0,2}\s*(am|pm)?\s*', args_text, re.IGNORECASE)
+        if time_match:
+            schedule_part = args_text[:time_match.end()].strip()
+            message_part = args_text[time_match.end():].strip() or "Scheduled reminder!"
+        else:
+            schedule_part = args_text
+            message_part = "Scheduled reminder!"
+
+        job_id, result = self.scheduler.add_recurring(user_id, chat_id, message_part, schedule_part)
+        bot_language = self.config['bot_language']
+        if job_id:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=f"{localized_text('schedule_set', bot_language)} {result}\n\"{message_part}\" (ID: {job_id})"
+            )
+        else:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=result
+            )
+
+    async def myschedules(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        List all active reminders and schedules for the user.
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        if not self.scheduler:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Scheduler is not enabled."
+            )
+            return
+
+        user_id = update.message.from_user.id
+        jobs = self.scheduler.get_user_jobs(user_id)
+        bot_language = self.config['bot_language']
+
+        if not jobs:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('no_active_schedules', bot_language)
+            )
+            return
+
+        lines = []
+        for job in jobs:
+            job_type = "recurring" if job.get("recurring") else "one-time"
+            if job.get("recurring"):
+                schedule_info = f"at {job.get('time', '?')}"
+                if job.get('days'):
+                    day_labels = {0: 'Mon', 1: 'Tue', 2: 'Wed', 3: 'Thu', 4: 'Fri', 5: 'Sat', 6: 'Sun'}
+                    days_str = ", ".join(day_labels.get(d, '?') for d in job['days'])
+                    schedule_info = f"{days_str} {schedule_info}"
+                else:
+                    schedule_info = f"daily {schedule_info}"
+            else:
+                schedule_info = job.get("run_at", "unknown time")
+
+            lines.append(f"[{job['id']}] ({job_type}) {schedule_info}: \"{job['message']}\"")
+
+        text = "\n".join(lines)
+        await update.effective_message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=text
+        )
+
+    async def cancelschedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Cancel a scheduled job by ID. Usage: /cancelschedule <id>
+        """
+        if not await is_allowed(self.config, update, context):
+            await self.send_disallowed_message(update, context)
+            return
+
+        if not self.scheduler:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Scheduler is not enabled."
+            )
+            return
+
+        bot_language = self.config['bot_language']
+        if not context.args:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text="Usage: /cancelschedule <job_id>"
+            )
+            return
+
+        job_id = context.args[0]
+        user_id = update.message.from_user.id
+        if self.scheduler.cancel_job(job_id, user_id):
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('schedule_cancelled', bot_language)
+            )
+        else:
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('schedule_not_found', bot_language)
+            )
+
+    async def _is_group_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Check if the user is a group admin, group creator, or bot admin."""
+        user_id = update.message.from_user.id
+        # Bot admin check
+        if is_admin(self.config, user_id):
+            return True
+        # Telegram group admin check
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, user_id)
+            return member.status in ('administrator', 'creator')
+        except Exception:
+            return False
 
     async def vision(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -865,6 +1261,14 @@ class ChatGPTTelegramBot:
         await application.bot.set_my_commands(self.group_commands, scope=BotCommandScopeAllGroupChats())
         await application.bot.set_my_commands(self.commands)
 
+        # Initialize scheduler with the application's job queue
+        if self.scheduler:
+            async def send_scheduled_message(chat_id: int, message: str):
+                await application.bot.send_message(chat_id=chat_id, text=f"🔔 {message}")
+
+            self.scheduler.set_application(application, send_scheduled_message)
+            self.scheduler.restore_jobs()
+
     def run(self):
         """
         Runs the bot indefinitely until the user presses Ctrl+C
@@ -884,6 +1288,30 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('resend', self.resend))
         application.add_handler(CommandHandler('mymemory', self.mymemory))
         application.add_handler(CommandHandler('forgetme', self.forgetme))
+        application.add_handler(CommandHandler('model', self.model))
+
+        # Group memory & persona commands
+        if self.group_memory:
+            application.add_handler(CommandHandler(
+                'persona', self.persona,
+                filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP
+            ))
+            application.add_handler(CommandHandler(
+                'groupmemory', self.groupmemory,
+                filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP
+            ))
+            application.add_handler(CommandHandler(
+                'forgetgroup', self.forgetgroup,
+                filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP
+            ))
+
+        # Scheduler commands
+        if self.scheduler:
+            application.add_handler(CommandHandler('remind', self.remind))
+            application.add_handler(CommandHandler('schedule', self.schedule))
+            application.add_handler(CommandHandler('myschedules', self.myschedules))
+            application.add_handler(CommandHandler('cancelschedule', self.cancelschedule))
+
         application.add_handler(CommandHandler(
             'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
         )
