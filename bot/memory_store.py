@@ -8,6 +8,8 @@ import numpy as np
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    if a.shape != b.shape:
+        return 0.0
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
@@ -68,10 +70,10 @@ class MemoryStore:
                        embedding: np.ndarray, source: str = 'extracted',
                        scope: str = 'dm') -> int:
         """Insert a fact with dedup/supersede logic. Returns fact ID or -1 if skipped."""
-        # Load existing active facts for this user to check duplicates
+        # Load existing active facts within the same scope to check duplicates
         async with self._db.execute(
-            "SELECT id, fact, embedding FROM facts WHERE user_id = ? AND is_active = 1",
-            (user_id,)
+            "SELECT id, fact, embedding FROM facts WHERE user_id = ? AND scope = ? AND origin_chat_id = ? AND is_active = 1",
+            (user_id, scope, origin_chat_id)
         ) as cursor:
             rows = await cursor.fetchall()
 
