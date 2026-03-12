@@ -91,7 +91,8 @@ class ChatGPTTelegramBot:
         self.last_message = {}
         self.inline_queries_cache = {}
         self.group_chat_messages: dict[int, deque] = {}  # {chat_id: rolling buffer of recent messages}
-        self.group_context_seen: dict[int, int] = {}  # {chat_id: buffer length at last bot invocation}
+        self.group_context_total: dict[int, int] = {}  # {chat_id: total messages ever added}
+        self.group_context_seen: dict[int, int] = {}  # {chat_id: total count at last bot invocation}
         self.telegram_native_stream = self.config.get('telegram_native_stream', False)
         if self.telegram_native_stream:
             logging.info('TELEGRAM_NATIVE_STREAM enabled, using legacy edit-based transport until Bot API adapter is added.')
@@ -1005,9 +1006,9 @@ class ChatGPTTelegramBot:
         if is_group_chat(update):
             is_active = self.claude.has_active_conversation(chat_id)
             group_context = self._get_group_context(chat_id, only_new=is_active)
-            # Mark current buffer position so next invocation only gets new messages
-            if chat_id in self.group_chat_messages:
-                self.group_context_seen[chat_id] = len(self.group_chat_messages[chat_id])
+            # Mark current total so next invocation only gets new messages
+            if chat_id in self.group_context_total:
+                self.group_context_seen[chat_id] = self.group_context_total[chat_id]
 
         try:
             total_tokens = 0
@@ -1271,6 +1272,7 @@ class ChatGPTTelegramBot:
             self.group_chat_messages[chat_id] = deque(maxlen=max_messages)
 
         self.group_chat_messages[chat_id].append(f"{sender}: {text}")
+        self.group_context_total[chat_id] = self.group_context_total.get(chat_id, 0) + 1
 
     def _get_group_context(self, chat_id: int, only_new: bool = False) -> str | None:
         """
@@ -1286,10 +1288,13 @@ class ChatGPTTelegramBot:
             return None
 
         if only_new:
+            total = self.group_context_total.get(chat_id, 0)
             seen = self.group_context_seen.get(chat_id, 0)
-            messages = messages[seen:]
-            if not messages:
+            new_count = total - seen
+            if new_count <= 0:
                 return None
+            # Take only the last new_count messages from the buffer
+            messages = messages[-new_count:] if new_count < len(messages) else messages
             label = "Group messages since you last responded"
         else:
             label = "Recent group chat messages for context"
