@@ -16,8 +16,7 @@ from plugins.webshot import WebshotPlugin
 from plugins.iplocation import IpLocationPlugin
 from plugins.url_content import UrlContentPlugin
 from plugins.image_generation import ImageGenerationPlugin
-from plugins.user_memory_plugin import UserMemoryPlugin
-from plugins.group_memory_plugin import GroupMemoryPlugin
+from plugins.explicit_memory_plugin import ExplicitMemoryPlugin
 from plugins.scheduler_plugin import SchedulerPlugin
 
 
@@ -26,7 +25,7 @@ class PluginManager:
     A class to manage the plugins and call the correct functions
     """
 
-    def __init__(self, config, user_memory=None, group_memory=None, scheduler=None):
+    def __init__(self, config, memory_store=None, ollama_client=None, scheduler=None):
         enabled_plugins = config.get('plugins', [])
         plugin_mapping = {
             'wolfram': WolframAlphaPlugin,
@@ -48,13 +47,9 @@ class PluginManager:
         }
         self.plugins = [plugin_mapping[plugin]() for plugin in enabled_plugins if plugin in plugin_mapping]
 
-        # User memory plugin is always active when memory is provided
-        if user_memory is not None:
-            self.plugins.append(UserMemoryPlugin(user_memory))
-
-        # Group memory plugin is always active when group memory is provided
-        if group_memory is not None:
-            self.plugins.append(GroupMemoryPlugin(group_memory))
+        # Explicit memory plugin is always active when memory store and ollama are provided
+        if memory_store is not None and ollama_client is not None:
+            self.plugins.append(ExplicitMemoryPlugin(memory_store, ollama_client))
 
         # Scheduler plugin is always active when scheduler is provided
         if scheduler is not None:

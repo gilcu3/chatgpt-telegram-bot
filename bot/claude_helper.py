@@ -68,51 +68,49 @@ class ClaudeHelper:
     Claude API helper class.
     """
 
-    def __init__(self, config: dict, plugin_manager: PluginManager, model_router=None, group_memory=None):
+    def __init__(self, config: dict, plugin_manager: PluginManager, model_router=None,
+                 ollama_client=None, memory_store=None):
         """
         Initializes the Claude helper class with the given configuration.
         :param config: A dictionary containing the Claude configuration
         :param plugin_manager: The plugin manager
         :param model_router: Optional ModelRouter for smart model selection
-        :param group_memory: Optional GroupMemory for group-scoped personas and facts
+        :param ollama_client: OllamaClient for summarisation
+        :param memory_store: MemoryStore for group persona lookup
         """
         http_client = httpx.AsyncClient(proxy=config['proxy']) if config.get('proxy') else None
         self.client = anthropic.AsyncAnthropic(api_key=config['api_key'], http_client=http_client)
         self.config = config
         self.plugin_manager = plugin_manager
         self.model_router = model_router
-        self.group_memory = group_memory
+        self.ollama = ollama_client
+        self.memory_store = memory_store
         self.conversations: dict[int: list] = {}  # {chat_id: history}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
         self.model_overrides: dict[int: str] = {}  # {chat_id: model_id} per-chat overrides
         self._last_routing_info: dict[int: dict] = {}  # {chat_id: routing metadata}
 
-    def _build_system_prompt(self, chat_id: int = None) -> str:
+    async def _build_system_prompt(self, chat_id: int = None) -> str:
         """Builds the full system prompt, including memory tool instructions and optional group persona."""
         # Use group persona if set, otherwise use default assistant prompt
         base = self.config['assistant_prompt']
-        if chat_id and self.group_memory:
-            persona = self.group_memory.get_persona(chat_id)
+        if chat_id and self.memory_store:
+            persona = await self.memory_store.get_group_persona(chat_id)
             if persona:
                 base = persona
 
         memory_supplement = (
-            "\n\nYou have persistent memory tools. USE THEM PROACTIVELY — do not wait to be asked."
-            "\n- When a user introduces themselves or states their name, call remember_user_name immediately."
-            "\n- When a user shares significant personal details (job, hobbies, preferences, skills, "
-            "location, life events), call remember_user_fact to store a concise summary."
-            "\n- Do NOT store trivial or transient things (greetings, one-off questions, temporary moods)."
-            "\n- Memory context about the user may appear in brackets before their message — check it "
-            "to avoid storing duplicates. If stored info is outdated or contradicted, call forget_user_fact "
-            "to remove the old fact before storing the corrected one."
-            "\n- In group chats, messages are prefixed with the sender's name (e.g. 'Dave: message')."
-            "\n- The user_id is provided automatically — just supply the name or fact."
-            "\n- In group chats, you also have group memory tools (remember_group_fact, forget_group_fact) "
-            "for storing shared group decisions, project context, and recurring topics."
-            "\n- You also have scheduling tools (set_reminder, set_recurring_schedule, list_reminders, "
-            "cancel_reminder) to set, view, and manage reminders and recurring messages for users."
-            "\n- Each user message is prefixed with a timestamp in [YYYY-MM-DD HH:MM TZ] format. "
-            "Use this to know the current date and time, and to gauge time gaps between messages."
+            "\n\nYou have access to a persistent memory system. Relevant facts about the user "
+            "may appear in brackets before their message — use them naturally without drawing "
+            "attention to the fact that you're reading from stored memory."
+            "\n- You have a remember_fact tool. ONLY use it when a user explicitly asks you to "
+            "remember something (e.g. 'remember that I...', 'my name is...'). Do NOT call it "
+            "proactively — background extraction handles that automatically."
+            "\n- You have a forget_fact tool for when users ask you to forget something."
+            "\n- In group chats, messages are prefixed with the sender's name."
+            "\n- Each message includes a timestamp in [YYYY-MM-DD HH:MM TZ] format."
+            "\n- You also have scheduling tools (set_reminder, set_recurring_schedule, "
+            "list_reminders, cancel_reminder) for managing reminders."
         )
         return base + memory_supplement
 
@@ -324,22 +322,10 @@ class ClaudeHelper:
             }
             logging.info(f'Smart routing selected {label} ({routed_model}) for chat {chat_id}')
 
-        # Inject group memory context into query if available
-        if self.group_memory:
-            group_ctx = self.group_memory.get_context_string(chat_id)
-            if group_ctx:
-                # Prepend group context to the last user message
-                last_msg = self.conversations[chat_id][-1]
-                if last_msg['role'] == 'user' and isinstance(last_msg['content'], str):
-                    self.conversations[chat_id][-1] = {
-                        'role': 'user',
-                        'content': f"{group_ctx}\n{last_msg['content']}"
-                    }
-
         common_args = {
             'model': model,
             'messages': self.conversations[chat_id],
-            'system': self._build_system_prompt(chat_id=chat_id),
+            'system': await self._build_system_prompt(chat_id=chat_id),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['max_tokens'],
         }
@@ -455,7 +441,7 @@ class ClaudeHelper:
         common_args = {
             'model': model,
             'messages': self.conversations[chat_id],
-            'system': self._build_system_prompt(chat_id=chat_id),
+            'system': await self._build_system_prompt(chat_id=chat_id),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['max_tokens'],
         }
@@ -508,7 +494,7 @@ class ClaudeHelper:
         return {
             'model': self.config['model'],
             'messages': self.conversations[chat_id][:-1] + [message],
-            'system': self._build_system_prompt(chat_id=chat_id),
+            'system': await self._build_system_prompt(chat_id=chat_id),
             'temperature': self.config['temperature'],
             'max_tokens': self.config['vision_max_tokens'],
         }
@@ -652,19 +638,15 @@ class ClaudeHelper:
 
     async def __summarise(self, conversation) -> str:
         """
-        Summarises the conversation history.
+        Summarises the conversation history using local LLM.
         """
-        messages = [
-            {"role": "user", "content": f"Summarize this conversation in 700 characters or less:\n{str(conversation)}"}
-        ]
-        response = await self.client.messages.create(
-            model=self.config['model'],
-            messages=messages,
-            system="You are a helpful assistant that summarizes conversations concisely.",
-            max_tokens=1024,
-            temperature=0.4
-        )
-        return response.content[0].text
+        if self.ollama:
+            summary = await self.ollama.summarise(str(conversation))
+            if summary:
+                return summary
+        # Fallback: simple truncation if Ollama is down
+        logging.warning("Ollama unavailable for summarisation, truncating history")
+        return "Previous conversation context unavailable."
 
     def __max_model_tokens(self):
         model = self.config['model']
