@@ -6,8 +6,9 @@ from dotenv import load_dotenv
 from plugin_manager import PluginManager
 from claude_helper import ClaudeHelper, default_max_tokens, are_functions_available
 from telegram_bot import ChatGPTTelegramBot
-from user_memory import UserMemory
-from group_memory import GroupMemory
+from ollama_client import OllamaClient
+from memory_store import MemoryStore
+from memory_worker import MemoryWorker
 from model_router import ModelRouter
 from scheduler import BotScheduler
 
@@ -47,6 +48,8 @@ def main():
         group_context_messages = int(os.environ.get('GROUP_CONTEXT_MESSAGES', 5))
         token_price = float(os.environ.get('TOKEN_PRICE', 0.003))
         vision_token_price = float(os.environ.get('VISION_TOKEN_PRICE', '0.003'))
+        memory_top_n = int(os.environ.get('MEMORY_TOP_N', 10))
+        memory_relevance_threshold = float(os.environ.get('MEMORY_RELEVANCE_THRESHOLD', 0.3))
     except ValueError as e:
         logging.error(f'Invalid configuration value: {e}')
         exit(1)
@@ -105,15 +108,34 @@ def main():
         'bot_language': os.environ.get('BOT_LANGUAGE', 'en'),
         'telegram_native_stream': os.environ.get('TELEGRAM_NATIVE_STREAM', 'false').lower() == 'true',
         'enable_scheduler': enable_scheduler,
+        'memory_top_n': memory_top_n,
+        'memory_relevance_threshold': memory_relevance_threshold,
     }
 
     plugin_config = {
         'plugins': os.environ.get('PLUGINS', '').split(',')
     }
 
-    # Setup components
-    user_memory = UserMemory()
-    group_memory = GroupMemory()
+    # Memory pipeline components
+    ollama_base_url = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
+    ollama_chat_model = os.environ.get('OLLAMA_CHAT_MODEL', 'qwen3.5:9b')
+    ollama_embed_model = os.environ.get('OLLAMA_EMBED_MODEL', 'nomic-embed-text')
+    memory_db_path = os.environ.get('MEMORY_DB_PATH', 'memory/memory.db')
+
+    ollama_client = OllamaClient(
+        base_url=ollama_base_url,
+        chat_model=ollama_chat_model,
+        embed_model=ollama_embed_model,
+    )
+    memory_store = MemoryStore(db_path=memory_db_path)
+    memory_worker = MemoryWorker(
+        ollama=ollama_client,
+        store=memory_store,
+        config={
+            'memory_top_n': memory_top_n,
+            'memory_relevance_threshold': memory_relevance_threshold,
+        },
+    )
 
     # Smart model routing (optional)
     model_router = None
@@ -135,21 +157,23 @@ def main():
     # Wire everything together
     plugin_manager = PluginManager(
         config=plugin_config,
-        user_memory=user_memory,
-        group_memory=group_memory,
+        memory_store=memory_store,
+        ollama_client=ollama_client,
         scheduler=scheduler,
     )
     claude_helper = ClaudeHelper(
         config=claude_config,
         plugin_manager=plugin_manager,
         model_router=model_router,
-        group_memory=group_memory,
+        ollama_client=ollama_client,
+        memory_store=memory_store,
     )
     telegram_bot = ChatGPTTelegramBot(
         config=telegram_config,
         claude=claude_helper,
-        user_memory=user_memory,
-        group_memory=group_memory,
+        memory_store=memory_store,
+        ollama=ollama_client,
+        memory_worker=memory_worker,
         scheduler=scheduler,
     )
     telegram_bot.run()

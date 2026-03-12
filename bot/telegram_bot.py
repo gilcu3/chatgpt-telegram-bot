@@ -22,8 +22,9 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
     cleanup_intermediate_files
 from claude_helper import ClaudeHelper, localized_text, CLAUDE_MODELS
 from usage_tracker import UsageTracker
-from user_memory import UserMemory
-from group_memory import GroupMemory
+from memory_store import MemoryStore
+from ollama_client import OllamaClient
+from memory_worker import MemoryWorker
 from scheduler import BotScheduler
 
 
@@ -32,20 +33,23 @@ class ChatGPTTelegramBot:
     Class representing a Claude Telegram Bot.
     """
 
-    def __init__(self, config: dict, claude: ClaudeHelper, user_memory: UserMemory,
-                 group_memory: GroupMemory = None, scheduler: BotScheduler = None):
+    def __init__(self, config: dict, claude: ClaudeHelper, memory_store: MemoryStore,
+                 ollama: OllamaClient, memory_worker: MemoryWorker,
+                 scheduler: BotScheduler = None):
         """
         Initializes the bot with the given configuration and Claude helper object.
         :param config: A dictionary containing the bot configuration
         :param claude: ClaudeHelper object
-        :param user_memory: UserMemory object for persistent per-user memory
-        :param group_memory: GroupMemory object for persistent per-group memory
+        :param memory_store: MemoryStore object for persistent memory (SQLite)
+        :param ollama: OllamaClient for embeddings
+        :param memory_worker: MemoryWorker for background fact extraction
         :param scheduler: BotScheduler object for reminders and recurring messages
         """
         self.config = config
         self.claude = claude
-        self.user_memory = user_memory
-        self.group_memory = group_memory
+        self.memory_store = memory_store
+        self.ollama = ollama
+        self.memory_worker = memory_worker
         self.scheduler = scheduler
         bot_language = self.config['bot_language']
         self.commands = [
@@ -79,7 +83,7 @@ class ChatGPTTelegramBot:
         )] + self.commands
 
         # Add group-only commands
-        if self.group_memory:
+        if self.memory_store:
             self.group_commands.extend([
                 BotCommand(command='persona', description=localized_text('persona_description', bot_language)),
                 BotCommand(command='groupmemory', description=localized_text('groupmemory_description', bot_language)),
@@ -405,7 +409,7 @@ class ChatGPTTelegramBot:
             return
 
         user_id = update.message.from_user.id
-        memory_text = self.user_memory.get_all_formatted(user_id)
+        memory_text = await self.memory_store.get_user_facts_formatted(user_id)
         bot_language = self.config['bot_language']
         header = localized_text('mymemory_header', bot_language)
         await update.effective_message.reply_text(
@@ -422,7 +426,7 @@ class ChatGPTTelegramBot:
             return
 
         user_id = update.message.from_user.id
-        self.user_memory.clear_user(user_id)
+        await self.memory_store.clear_user(user_id)
         bot_language = self.config['bot_language']
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
@@ -506,7 +510,7 @@ class ChatGPTTelegramBot:
 
         if not args_text:
             # Show current persona
-            persona = self.group_memory.get_persona(chat_id) if self.group_memory else None
+            persona = await self.memory_store.get_group_persona(chat_id) if self.memory_store else None
             if persona:
                 await update.effective_message.reply_text(
                     message_thread_id=get_thread_id(update),
@@ -528,13 +532,13 @@ class ChatGPTTelegramBot:
             return
 
         if args_text.lower() == 'reset':
-            self.group_memory.clear_persona(chat_id)
+            await self.memory_store.clear_group_persona(chat_id)
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
                 text=localized_text('persona_cleared', bot_language)
             )
         else:
-            self.group_memory.set_persona(chat_id, args_text)
+            await self.memory_store.set_group_persona(chat_id, args_text)
             # Reset conversation so persona takes effect immediately
             self.claude.reset_chat_history(chat_id=chat_id)
             await update.effective_message.reply_text(
@@ -559,7 +563,7 @@ class ChatGPTTelegramBot:
 
         chat_id = update.effective_chat.id
         bot_language = self.config['bot_language']
-        memory_text = self.group_memory.get_all_formatted(chat_id) if self.group_memory else "No group memories stored."
+        memory_text = await self.memory_store.get_group_facts_formatted(chat_id) if self.memory_store else "No group memories stored."
         header = localized_text('groupmemory_description', bot_language)
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
@@ -586,8 +590,8 @@ class ChatGPTTelegramBot:
             return
 
         chat_id = update.effective_chat.id
-        if self.group_memory:
-            self.group_memory.clear_group(chat_id)
+        if self.memory_store:
+            await self.memory_store.clear_group(chat_id)
         bot_language = self.config['bot_language']
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
@@ -905,7 +909,7 @@ class ChatGPTTelegramBot:
                 self.usage[user_id] = UsageTracker(user_id, update.message.from_user.name)
 
             # Prefix with sender identity for user distinction and memory
-            vision_prompt = self._prefix_with_user_context(update, prompt) if prompt else prompt
+            vision_prompt = (await self._prefix_with_user_context(update, prompt)) if prompt else prompt
 
             if self.config['stream']:
                 stream_response = self.claude.interpret_image_stream(
@@ -974,6 +978,7 @@ class ChatGPTTelegramBot:
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
         prompt = message_text(update.message)
+        original_prompt = prompt
         self.last_message[chat_id] = prompt
 
         if is_group_chat(update):
@@ -998,7 +1003,7 @@ class ChatGPTTelegramBot:
 
         # Prefix the prompt with sender identity so Claude can distinguish
         # users and use the memory tools with the correct user_id.
-        prompt = self._prefix_with_user_context(update, prompt)
+        prompt = await self._prefix_with_user_context(update, prompt)
 
         # Build group context from the rolling buffer.
         # For active conversations, only inject messages since the bot last responded.
@@ -1061,6 +1066,24 @@ class ChatGPTTelegramBot:
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
 
             add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
+
+            # Queue conversation turn for background fact extraction
+            display_name = await self.memory_store.get_display_name(user_id) or update.message.from_user.first_name
+            # Get the last assistant response from conversation history
+            history = self.claude.conversations.get(chat_id, [])
+            response_text = ""
+            if history:
+                last = history[-1]
+                if last.get('role') == 'assistant' and isinstance(last.get('content'), str):
+                    response_text = last['content']
+            conversation_text = f"{display_name}: {original_prompt}\nAssistant: {response_text}"
+            await self.memory_worker.enqueue(
+                user_id=user_id,
+                chat_id=chat_id,
+                is_dm=not is_group_chat(update),
+                user_name=display_name,
+                conversation_text=conversation_text,
+            )
 
         except Exception as e:
             logging.exception(e)
@@ -1302,16 +1325,35 @@ class ChatGPTTelegramBot:
         context_lines = "\n".join(messages)
         return f"[{label}:\n{context_lines}]"
 
-    def _prefix_with_user_context(self, update: Update, prompt: str) -> str:
+    async def _prefix_with_user_context(self, update: Update, prompt: str) -> str:
         """
-        Prefixes a prompt with sender identity and memory context.
-        In group chats: includes user_id, display name, and any stored memory.
-        In DMs: includes memory context only (no name prefix needed).
+        Prefixes a prompt with sender identity and relevant memory context.
+        Uses embedding search with scope enforcement.
         """
         user_id = update.message.from_user.id
         first_name = update.message.from_user.first_name
-        display_name = self.user_memory.get_display_name(user_id) or first_name
-        memory_context = self.user_memory.get_context_string(user_id)
+        display_name = await self.memory_store.get_display_name(user_id) or first_name
+        is_dm = not is_group_chat(update)
+        chat_id = update.effective_chat.id
+
+        # Embed the user's message for relevance search
+        query_embedding = await self.ollama.embed(prompt)
+
+        memory_context = None
+        if query_embedding is not None:
+            results = await self.memory_store.search_facts(
+                user_id=user_id,
+                query_embedding=query_embedding,
+                chat_id=chat_id,
+                is_dm=is_dm,
+                top_n=self.config.get('memory_top_n', 10),
+                threshold=self.config.get('memory_relevance_threshold', 0.3),
+            )
+            if results:
+                facts = "; ".join(r['fact'] for r in results)
+                memory_context = f"[User memory: Preferred name: {display_name}, Known facts: {facts}]"
+            elif display_name != first_name:
+                memory_context = f"[User memory: Preferred name: {display_name}]"
 
         if is_group_chat(update):
             prefix = f"{display_name}: "
@@ -1319,7 +1361,6 @@ class ChatGPTTelegramBot:
                 prefix = f"{memory_context} {prefix}"
             return f"{prefix}{prompt}"
         else:
-            # DM — no name prefix, but include memory if available
             if memory_context:
                 return f"{memory_context}\n{prompt}"
             return prompt
@@ -1330,6 +1371,11 @@ class ChatGPTTelegramBot:
         """
         await application.bot.set_my_commands(self.group_commands, scope=BotCommandScopeAllGroupChats())
         await application.bot.set_my_commands(self.commands)
+
+        # Initialize memory store and start background worker
+        await self.memory_store.init()
+        self.memory_worker.start()
+        logging.info('Memory pipeline initialized')
 
         # Initialize scheduler with the application's job queue
         if self.scheduler:
@@ -1362,7 +1408,7 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('image', self.image))
 
         # Group memory & persona commands
-        if self.group_memory:
+        if self.memory_store:
             application.add_handler(CommandHandler(
                 'persona', self.persona,
                 filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP
