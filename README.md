@@ -19,23 +19,50 @@ A [Telegram bot](https://core.telegram.org/bots/api) powered by Anthropic's [Cla
 - [x] Stream support with real-time message editing
 - [x] Vision support — send images and have Claude interpret them
 - [x] Persistent user memory across conversations (`/mymemory`, `/forgetme`)
-- [x] Group chat support with rolling context buffer
-- [x] Claude model selection (Opus 4.6, Opus 4.5, Sonnet 4.5, Haiku 4.5)
+- [x] Async memory pipeline backed by Ollama for local fact extraction and embedding-based retrieval
+- [x] Group chat support with rolling context buffer, group personas, and group memory
+- [x] Claude model selection (Opus 4.6, Opus 4.5, Sonnet 4.5, Haiku 4.5) with `/model` command
+- [x] Smart model routing — auto-select Haiku, Sonnet, or Opus based on query complexity
+- [x] Scheduler for reminders and recurring messages (`/remind`, `/schedule`)
+- [x] Image generation via Gemini or OpenAI DALL-E (`/image`)
 - [x] Localized bot language
   - Available languages :brazil: :cn: :finland: :de: :indonesia: :iran: :it: :malaysia: :netherlands: :poland: :ru: :saudi_arabia: :es: :taiwan: :tr: :ukraine: :gb: :uzbekistan: :vietnam: :israel:
 - [x] Support *tool use* (plugins) to extend the bot's functionality with 3rd party services
   - Weather, Spotify, web search, text-to-speech and more. See [here](#available-plugins) for a list of available plugins
 
 ## Bot Commands
-| Command      | Description                          |
-|--------------|--------------------------------------|
-| `/help`      | Show available commands              |
-| `/reset`     | Clear conversation history           |
-| `/stats`     | View token usage and budget          |
-| `/resend`    | Resend last response                 |
-| `/mymemory`  | View stored memories about you       |
-| `/forgetme`  | Clear all stored memories            |
-| `/chat`      | (Group chats) Explicitly trigger bot |
+
+#### General
+| Command           | Description                                      |
+|-------------------|--------------------------------------------------|
+| `/help`           | Show available commands                          |
+| `/reset`          | Clear conversation history                       |
+| `/stats`          | View token usage and budget                      |
+| `/resend`         | Resend last response                             |
+| `/model`          | Switch Claude model on-the-fly                   |
+| `/image`          | Generate an image from a text prompt             |
+
+#### Memory
+| Command           | Description                                      |
+|-------------------|--------------------------------------------------|
+| `/mymemory`       | View stored memories about you                   |
+| `/forgetme`       | Clear all stored memories                        |
+
+#### Scheduling
+| Command           | Description                                      |
+|-------------------|--------------------------------------------------|
+| `/remind`         | Set a one-time reminder                          |
+| `/schedule`       | Create a recurring scheduled message             |
+| `/myschedules`    | View your active schedules                       |
+| `/cancelschedule` | Cancel a scheduled message                       |
+
+#### Group chats
+| Command           | Description                                      |
+|-------------------|--------------------------------------------------|
+| `/chat`           | Explicitly trigger the bot in a group            |
+| `/persona`        | Set a group-specific bot personality             |
+| `/groupmemory`    | View group-specific stored facts                 |
+| `/forgetgroup`    | Clear all group memories                         |
 
 ## Additional features - help needed!
 If you'd like to help, check out the [issues](https://github.com/n3d1117/chatgpt-telegram-bot/issues) section and contribute!
@@ -90,8 +117,39 @@ The following parameters are optional and can be set in the `.env` file:
 #### Group chats
 | Parameter                | Description                                                                           | Default value |
 |--------------------------|---------------------------------------------------------------------------------------|---------------|
-| `GROUP_TRIGGER_KEYWORD`  | If set, the bot in group chats will only respond to messages that start with this keyword | -           |
+| `GROUP_TRIGGER_KEYWORD`  | If set, the bot in group chats will only respond to messages that contain this keyword     | -           |
 | `GROUP_CONTEXT_MESSAGES` | Number of recent group chat messages to include as context for the bot                | `5`           |
+
+#### Smart model routing
+| Parameter              | Description                                                                                      | Default value                  |
+|------------------------|--------------------------------------------------------------------------------------------------|--------------------------------|
+| `ENABLE_SMART_ROUTING` | Enable automatic model selection based on query complexity (routes to Haiku, Sonnet, or Opus)    | `false`                        |
+| `SHOW_ROUTING_INFO`    | Whether to display which model was selected and cost savings in each response                    | `true`                         |
+| `ROUTING_HAIKU_MODEL`  | The Haiku model to use for simple queries                                                        | `claude-haiku-4-5-20251001`    |
+| `ROUTING_SONNET_MODEL` | The Sonnet model to use for moderate queries                                                     | `claude-sonnet-4-5-20250929`   |
+| `ROUTING_OPUS_MODEL`   | The Opus model to use for complex queries                                                        | `claude-opus-4-6`              |
+
+#### Scheduler
+| Parameter          | Description                                                                    | Default value |
+|--------------------|--------------------------------------------------------------------------------|---------------|
+| `ENABLE_SCHEDULER` | Enable the reminder and scheduling system (`/remind`, `/schedule` commands)    | `true`        |
+| `DEFAULT_TIMEZONE` | Default timezone for scheduling (IANA timezone, e.g. `Europe/Rome`, `US/Eastern`) | `UTC`      |
+
+#### Memory pipeline (Ollama)
+The memory pipeline uses a local [Ollama](https://ollama.com) instance to extract facts from conversations and store them with embeddings for retrieval. This keeps memory processing off the Claude API (no extra cost) and runs asynchronously in the background.
+
+| Parameter                    | Description                                                                           | Default value     |
+|------------------------------|---------------------------------------------------------------------------------------|-------------------|
+| `OLLAMA_BASE_URL`            | URL of your Ollama server (e.g. `http://localhost:11434`)                             | -                 |
+| `OLLAMA_CHAT_MODEL`          | Ollama chat model used for fact extraction (e.g. `qwen3.5:9b`)                       | -                 |
+| `OLLAMA_EMBED_MODEL`         | Ollama embedding model used for similarity search (e.g. `nomic-embed-text`)           | -                 |
+| `MEMORY_TOP_N`               | Number of most similar facts to inject into the prompt                                | `10`              |
+| `MEMORY_RELEVANCE_THRESHOLD` | Minimum cosine similarity score for a fact to be considered relevant (0.0–1.0)        | `0.3`             |
+| `MEMORY_MAX_FACTS_PER_USER`  | Maximum number of stored facts per user                                               | `200`             |
+| `MEMORY_MAX_FACTS_PER_GROUP` | Maximum number of stored facts per group                                              | `100`             |
+| `MEMORY_DB_PATH`             | Path to the SQLite database for memory storage                                        | `memory/memory.db`|
+
+When Ollama is not configured or unreachable, the bot continues to work normally without memory features.
 
 #### Budgets
 | Parameter            | Description                                                                                                                                                                                                                                                                                                                                                                               | Default value |
@@ -131,6 +189,9 @@ Check out the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/di
 | `iplocation`              | Look up the geographic location of an IP address                                                                                                    | -                                                                    |                     |
 | `url_content`             | Fetch and extract text content from a URL for reading, summarizing, or answering questions about webpages                                           | -                                                                    | `beautifulsoup4`    |
 | `auto_tts`                | Text to speech using OpenAI APIs - by [@Jipok](https://github.com/Jipok)                                                                            | -                                                                    |                     |
+| `image_generation`        | Generate images from text prompts using Gemini or OpenAI DALL-E                                                                                      | `GEMINI_API_KEY` or `OPENAI_IMAGE_API_KEY`                           | `google-genai`      |
+| `explicit_memory`         | Explicit memory management — lets users ask the bot to remember or forget specific facts (requires Ollama memory pipeline)                            | `OLLAMA_BASE_URL`, `OLLAMA_EMBED_MODEL`                              |                     |
+| `scheduler`               | Conversational reminders and recurring schedules — lets Claude set reminders during chat (requires `ENABLE_SCHEDULER=true`)                          | -                                                                    |                     |
 
 #### Plugin environment variables
 | Variable                          | Description                                                                                                                                                                                     | Default value |
@@ -142,6 +203,9 @@ Check out the [Budget Manual](https://github.com/n3d1117/chatgpt-telegram-bot/di
 | `WORLDTIME_DEFAULT_TIMEZONE`      | Default timezone to use, i.e. `Europe/Rome` (required only for the `worldtimeapi` plugin, you can get TZ Identifiers from [here](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) | -             |
 | `DUCKDUCKGO_SAFESEARCH`           | DuckDuckGo safe search (`on`, `off` or `moderate`) (optional, applies to `ddg_web_search` and `ddg_image_search`)                                                                               | `moderate`    |
 | `DEEPL_API_KEY`                   | DeepL API key (required for the `deepl` plugin, you can get one [here](https://www.deepl.com/pro-api?cta=header-pro-api))                                                                       | -             |
+| `IMAGE_GENERATION_PROVIDER`       | Image generation provider: `gemini` or `openai` (required only for the `image_generation` plugin)                                                                                                | `gemini`      |
+| `GEMINI_API_KEY`                  | Google Gemini API key (required for Gemini image generation, get one from [Google AI Studio](https://aistudio.google.com/apikey))                                                                 | -             |
+| `OPENAI_IMAGE_API_KEY`            | OpenAI API key for DALL-E image generation (required when using OpenAI provider)                                                                                                                 | -             |
 
 ### Installing
 Clone the repository and navigate to the project directory:
